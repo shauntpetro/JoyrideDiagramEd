@@ -1,0 +1,11 @@
+{
+  "name": "joyride-diagram-ed",
+  "version": "1.0.0",
+  "description": "Joyride Logistics Fleet Operations Diagram",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
