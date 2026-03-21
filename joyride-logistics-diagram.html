@@ -105,47 +105,70 @@
     }
 
     function transformCSVData(rows, regionFilter) {
-      // Group rows by Operator ID (= seat/load)
-      const byOperator = {};
+      // ── Step 1: Compute per-driver stats from ALL rows (before filtering) ──
+      const driverStats = {}; // name → { totalMiles, tripCount, facilities, blockIds, workTypes }
       const driverSet = new Map(); // name → id
       let nextDriverId = 1;
 
       rows.forEach(row => {
-        const opId = row["Operator ID"] || "";
-        const driverName = row["Driver Name"] || "";
-        const blockId = row["Block ID"] || "";
-        if (!opId && !driverName) return; // skip empty rows
+        const name = (row["Driver Name"] || "").trim();
+        if (!name) return;
+        if (!driverSet.has(name)) driverSet.set(name, nextDriverId++);
+        if (!driverStats[name]) driverStats[name] = { totalMiles: 0, tripCount: 0, facilities: new Set(), blockIds: new Set(), workTypes: new Set() };
+        const s = driverStats[name];
+        s.tripCount++;
+        const dist = parseFloat(row["Estimate Distance"]) || 0;
+        s.totalMiles += dist;
+        const stop1 = (row["Stop 1"] || "").trim();
+        const stop2 = (row["Stop 2"] || "").trim();
+        if (stop1) s.facilities.add(stop1);
+        if (stop2) s.facilities.add(stop2);
+        const blockId = (row["Block ID"] || "").trim();
+        if (blockId) s.blockIds.add(blockId);
+        const shipper = (row["Shipper Account"] || "").trim();
+        if (shipper) s.workTypes.add(shipper);
+      });
 
-        if (driverName && !driverSet.has(driverName)) {
-          driverSet.set(driverName, nextDriverId++);
-        }
+      // Estimate weekly hours: assume avg 45mph, so hours ≈ miles/45
+      Object.values(driverStats).forEach(s => {
+        s.estWeeklyHours = Math.round((s.totalMiles / 45) * 10) / 10;
+      });
+
+      // ── Step 2: Group by Operator ID (= seat/load) ──
+      const byOperator = {};
+      rows.forEach(row => {
+        const opId = (row["Operator ID"] || "").trim();
+        const driverName = (row["Driver Name"] || "").trim();
+        const blockId = (row["Block ID"] || "").trim();
+        if (!opId && !driverName) return;
 
         if (opId) {
-          if (!byOperator[opId]) byOperator[opId] = { trips: [], drivers: new Set(), blocks: new Set() };
+          if (!byOperator[opId]) byOperator[opId] = { trips: [], drivers: new Set(), blocks: new Set(), facilities: new Set() };
           byOperator[opId].trips.push(row);
           if (driverName) byOperator[opId].drivers.add(driverName);
           if (blockId) byOperator[opId].blocks.add(blockId);
+          const s1 = (row["Stop 1"] || "").trim();
+          const s2 = (row["Stop 2"] || "").trim();
+          if (s1) byOperator[opId].facilities.add(s1);
+          if (s2) byOperator[opId].facilities.add(s2);
         }
       });
 
-      // Extract regions from Operator IDs
+      // ── Step 3: Extract regions, filter ──
       const regions = new Set();
       Object.keys(byOperator).forEach(opId => {
         const parts = opId.split("_");
         if (parts.length >= 2) regions.add(parts[1]);
       });
 
-      // Filter by region if specified
       const filteredOps = Object.entries(byOperator).filter(([opId]) => {
         if (!regionFilter || regionFilter === "ALL") return true;
         const parts = opId.split("_");
         return parts.length >= 2 && parts[1] === regionFilter;
       });
-
-      // Sort by Operator ID
       filteredOps.sort(([a], [b]) => a.localeCompare(b));
 
-      // Build drivers and loads arrays
+      // ── Step 4: Build drivers and loads ──
       const allDriverNames = [];
       const trucks = [];
       let loadId = 1;
@@ -154,39 +177,38 @@
         const driverArr = [...data.drivers];
         const primary = driverArr[0] ? driverSet.get(driverArr[0]) : null;
         const secondary = driverArr[1] ? driverSet.get(driverArr[1]) : null;
-
-        // Collect drivers for this seat
-        driverArr.forEach(name => {
-          if (!allDriverNames.includes(name)) allDriverNames.push(name);
-        });
+        driverArr.forEach(name => { if (!allDriverNames.includes(name)) allDriverNames.push(name); });
 
         trucks.push({
-          id: loadId,
-          label: opId,
-          operatorId: opId,
-          primaryDriver: primary,
-          secondaryDriver: secondary || null,
+          id: loadId, label: opId, operatorId: opId,
+          primaryDriver: primary, secondaryDriver: secondary || null,
           blockCount: Math.max(data.blocks.size, 1),
-          tripData: data.trips,
-          blockIds: [...data.blocks],
+          tripData: data.trips, blockIds: [...data.blocks],
+          facilities: [...data.facilities],
         });
         loadId++;
       });
 
-      const drivers = allDriverNames.map(name => ({ id: driverSet.get(name), label: name }));
+      const drivers = allDriverNames.map(name => {
+        const s = driverStats[name] || {};
+        return {
+          id: driverSet.get(name), label: name,
+          totalMiles: Math.round(s.totalMiles || 0),
+          estWeeklyHours: s.estWeeklyHours || 0,
+          tripCount: s.tripCount || 0,
+          blockCount: s.blockIds ? s.blockIds.size : 0,
+          facilities: s.facilities ? [...s.facilities] : [],
+          workTypes: s.workTypes ? [...s.workTypes] : [],
+        };
+      });
 
-      // Determine blocks per load (max block count across all loads, capped at 6 for display)
       const maxBlocks = Math.min(Math.max(...trucks.map(t => t.blockCount), 1), 6);
       const hasPrimSec = trucks.some(t => t.secondaryDriver !== null);
 
       return {
-        drivers,
-        trucks,
-        blocksPerLoad: maxBlocks,
-        hasPrimarySecondary: hasPrimSec,
-        regions: [...regions].sort(),
-        totalTrips: rows.length,
-        csvMode: true,
+        drivers, trucks, blocksPerLoad: maxBlocks, hasPrimarySecondary: hasPrimSec,
+        regions: [...regions].sort(), totalTrips: rows.length, csvMode: true,
+        driverStats, // expose for backup ranking
       };
     }
 
@@ -373,11 +395,16 @@
             <div style={{ fontSize: 10, fontWeight: 700, color: B.bkpL, marginBottom: 5, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>
               Select Backup
             </div>
+            {availableBackups.length > 0 && availableBackups[0].hoursScore > 0 && (
+              <div style={{ fontSize: 8, color: B.dim, textAlign: "center", marginBottom: 4, fontStyle: "italic" }}>
+                Ranked by proximity & weekly hours
+              </div>
+            )}
             {availableBackups.length === 0 ? (
               <div style={{ fontSize: 11, color: B.dim, textAlign: "center", padding: 6 }}>No available drivers</div>
             ) : (
-              <div style={{ maxHeight: 180, overflowY: "auto" }}>
-                {availableBackups.map((d) => (
+              <div style={{ maxHeight: 220, overflowY: "auto" }}>
+                {availableBackups.map((d, idx) => (
                   <div
                     key={d.id}
                     onClick={d.onSelect}
@@ -385,13 +412,23 @@
                       display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderRadius: 6,
                       cursor: "pointer", fontSize: 11, fontWeight: 600, transition: "background 0.15s",
                       background: "transparent", marginBottom: 2, color: B.text,
+                      borderLeft: idx === 0 && d.proximityScore > 0 ? `2px solid ${B.green}` : "2px solid transparent",
                     }}
                     onMouseEnter={(e) => (e.currentTarget.style.background = B.bkpBg)}
                     onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                   >
-                    <PersonSVG size={14} color={B.bkp} />
-                    <span>{d.label}</span>
-                    <span style={{ fontSize: 9, color: B.dim, marginLeft: "auto" }}>(L{d.homeTruck})</span>
+                    <PersonSVG size={14} color={idx === 0 && d.proximityScore > 0 ? B.green : B.bkp} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</div>
+                      {(d.hoursScore > 0 || d.proximityScore > 0) && (
+                        <div style={{ fontSize: 8, color: B.dim, display: "flex", gap: 6, marginTop: 1 }}>
+                          {d.hoursScore > 0 && <span>{d.hoursScore}h/wk</span>}
+                          {d.totalMiles > 0 && <span>{d.totalMiles}mi</span>}
+                          {d.proximityScore > 0 && <span style={{ color: B.greenL }}>{d.proximityScore} shared stops</span>}
+                        </div>
+                      )}
+                    </div>
+                    <span style={{ fontSize: 9, color: B.dim, flexShrink: 0 }}>(L{d.homeTruck})</span>
                   </div>
                 ))}
               </div>
@@ -542,20 +579,35 @@
       const getAvailableForBlock = (truckId, blockNum) => {
         const usedAsBackup = new Set(Object.values(blockBackups));
         const truck = TRUCKS.find((t) => t.id === truckId);
-        return DRIVERS.filter((d) => {
+        const loadFacilities = truck?.facilities || [];
+        const available = DRIVERS.filter((d) => {
           if (usedAsBackup.has(d.id)) return false;
           if (d.id === truck.primaryDriver || d.id === truck.secondaryDriver) return false;
           for (const bk of Object.keys(cancelledBlocks)) {
             if (!cancelledBlocks[bk]) continue;
-            if (cascadeCancelled[bk]) continue; // Cascade-cancelled blocks don't disqualify drivers
+            if (cascadeCancelled[bk]) continue;
             const [tid, bn] = bk.split("-").map(Number);
             if (getOriginalDriver(tid, bn) === d.id && !blockBackups[bk]) return false;
           }
           return true;
         }).map((d) => {
           const homeTruck = TRUCKS.find((t) => t.primaryDriver === d.id || t.secondaryDriver === d.id);
-          return { ...d, homeTruck: homeTruck?.id };
+          // Proximity score: count shared facilities between driver and the load
+          const driverFacs = d.facilities || [];
+          const sharedFacilities = driverFacs.filter(f => loadFacilities.includes(f));
+          const proximityScore = sharedFacilities.length;
+          // Hours score: fewer weekly hours = more available
+          const hoursScore = d.estWeeklyHours || 0;
+          return { ...d, homeTruck: homeTruck?.id, proximityScore, sharedFacilities, hoursScore };
         });
+
+        // Sort: highest proximity first, then lowest hours first
+        available.sort((a, b) => {
+          if (b.proximityScore !== a.proximityScore) return b.proximityScore - a.proximityScore;
+          return a.hoursScore - b.hoursScore;
+        });
+
+        return available;
       };
 
       const toggleBlockCancel = (truckId, blockNum) => {
@@ -828,9 +880,20 @@
                     }}
                   >
                     <PersonSVG size={16} color={isBkp ? B.bkp : isHov ? B.red : isPrimary ? B.green : B.gold} />
-                    <span style={{ fontSize: 12, fontWeight: 600, flex: 1, color: B.text }}>
-                      {d.label}
-                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: csvRows ? 11 : 12, fontWeight: 600, color: B.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {d.label}
+                      </div>
+                      {csvRows && d.estWeeklyHours > 0 && (
+                        <div style={{ fontSize: 8, color: B.dim, display: "flex", gap: 4 }}>
+                          <span>{d.estWeeklyHours}h/wk</span>
+                          <span>·</span>
+                          <span>{d.totalMiles}mi</span>
+                          <span>·</span>
+                          <span>{d.tripCount} trips</span>
+                        </div>
+                      )}
+                    </div>
                     {isBkp && <span style={{ fontSize: 8, color: B.bkpL, fontWeight: 700 }}>BKP</span>}
                     {bkpBlocks.length > 0 && (
                       <span style={{ fontSize: 8, color: B.bkpL }}>L{bkpBlocks[0].truckId}B{bkpBlocks[0].blockNum}</span>
