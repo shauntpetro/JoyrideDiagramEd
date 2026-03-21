@@ -332,11 +332,17 @@
         const driverNum = domicileNumbers[dom]++;
         const dId = driverSet.get(name);
         const schedHrs = driverScheduledHours[dId] || 0;
+        const estDriveHours = Math.round((s.totalMiles || 0) / 45 * 10) / 10; // miles ÷ 45mph
+        const CYCLE_MAX = 70; // 70-hour/8-day cycle
+        const cycleUsed = estDriveHours; // best estimate without ELD
+        const cycleRemaining = Math.max(Math.round((CYCLE_MAX - cycleUsed) * 10) / 10, 0);
         return {
           id: dId, label: name,
           totalMiles: Math.round(s.totalMiles || 0),
-          estWeeklyHours: schedHrs > 0 ? schedHrs : (s.estWeeklyHours || 0), // prefer scheduled hours
+          estDriveHours,
+          estWeeklyHours: estDriveHours,
           scheduledHours: schedHrs,
+          cycleRemaining,
           tripCount: s.tripCount || 0,
           blockCount: s.blockIds ? s.blockIds.size : 0,
           facilities: s.facilities ? [...s.facilities] : [],
@@ -637,6 +643,7 @@
           hosDriveRemaining: driveRemainingMin,
           hosDutyRemaining: dutyRemainingMin,
           hosCycleRemaining: cycleRemainingMin,
+          cycleRemaining: cycleRemainingMin !== null ? Math.round(cycleRemainingMin / 6) / 10 : d.cycleRemaining, // minutes → hours
           estWeeklyHours: realWeeklyHours, // Override CSV estimate with real data
           hosSource: "samsara",
         };
@@ -1601,18 +1608,17 @@
                               <span style={{ fontSize: 8, color: d.blockCount >= 3 ? B.cancelRed : B.dim, fontWeight: d.blockCount >= 3 ? 700 : 400 }}>
                                 {d.blockCount}/3
                               </span>
-                              {d.hosSource ? (
+                              <span style={{ fontSize: 7, fontWeight: 600, color: d.cycleRemaining > 30 ? B.greenL : d.cycleRemaining > 10 ? B.gold : B.cancelRed }}>
+                                {d.cycleRemaining}h left
+                              </span>
+                              {d.hosSource && (
                                 <span style={{ fontSize: 7, color: (d.hosDutyRemaining || 0) > 480 ? B.greenL : (d.hosDutyRemaining || 0) > 240 ? B.gold : B.cancelRed }}>
-                                  {Math.round((d.hosDutyRemaining || 0) / 60)}h duty
-                                </span>
-                              ) : (
-                                <span style={{ fontSize: 7, color: B.dim }}>
-                                  <span style={{ color: d.estWeeklyHours > 40 ? B.cancelRed : d.estWeeklyHours > 25 ? B.gold : d.estWeeklyHours > 0 ? B.greenL : B.dim, fontWeight: 600 }}>
-                                    {d.estWeeklyHours}h
-                                  </span>
-                                  {d.totalMiles > 0 ? ` · ${d.totalMiles}mi` : ""} · {d.tripCount}t
+                                  · {Math.round((d.hosDutyRemaining || 0) / 60)}h duty
                                 </span>
                               )}
+                              <span style={{ fontSize: 7, color: B.dim }}>
+                                · {d.tripCount}t
+                              </span>
                               {isMaxed && <span style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
                               {isBkp && <span style={{ fontSize: 7, color: B.bkpL, fontWeight: 600 }}>BKP</span>}
                             </div>
@@ -2016,10 +2022,16 @@
                       <div style={{ fontSize: 9, color: B.dim }}>Trips</div>
                     </div>
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.estWeeklyHours || 0) > 40 ? B.cancelRed : (selectedDriverInfo.estWeeklyHours || 0) > 25 ? B.gold : B.greenL }}>
-                        {selectedDriverInfo.estWeeklyHours || 0}
+                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.cycleRemaining || 0) > 30 ? B.greenL : (selectedDriverInfo.cycleRemaining || 0) > 10 ? B.gold : B.cancelRed }}>
+                        {selectedDriverInfo.cycleRemaining || 0}h
                       </div>
-                      <div style={{ fontSize: 9, color: B.dim }}>{selectedDriverInfo.hosSource ? "Actual Hrs" : "Est Hrs/Wk"}</div>
+                      <div style={{ fontSize: 9, color: B.dim }}>{selectedDriverInfo.hosSource ? "Cycle Left (ELD)" : "Cycle Left (Est)"}</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: B.text }}>
+                        {selectedDriverInfo.estDriveHours || 0}h
+                      </div>
+                      <div style={{ fontSize: 9, color: B.dim }}>{selectedDriverInfo.hosSource ? "Actual Driven" : "Est Drive Hrs"}</div>
                     </div>
                     {selectedDriverInfo.hosSource && (
                       <div style={{ textAlign: "center" }}>
