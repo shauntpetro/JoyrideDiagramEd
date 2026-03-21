@@ -25,6 +25,7 @@
     }
     .block-cancel { animation: blockPulse 0.3s ease; }
     .panel-enter { animation: fadeSlideIn 0.25s ease; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   </style>
 </head>
 <body>
@@ -302,6 +303,230 @@
       </div>
     );
 
+    // ─── Samsara ELD Connect ─────────────────────────────────
+    const SamsaraConnect = ({ connected, onConnect, onDisconnect, loading, error, matchInfo }) => {
+      const [open, setOpen] = useState(false);
+      const [token, setToken] = useState("");
+      const dropRef = useRef(null);
+
+      // Close dropdown on outside click
+      useEffect(() => {
+        const handler = (e) => { if (dropRef.current && !dropRef.current.contains(e.target)) setOpen(false); };
+        document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+      }, []);
+
+      return (
+        <div ref={dropRef} style={{ position: "relative" }}>
+          <button onClick={() => setOpen(!open)} style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "5px 12px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+            cursor: "pointer", fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+            letterSpacing: 0.5, transition: "all 0.2s", border: "none",
+            background: connected ? "rgba(102,187,106,0.12)" : "rgba(193,59,64,0.10)",
+            color: connected ? B.greenL : B.redLight,
+          }}>
+            {connected && <span style={{ width: 6, height: 6, borderRadius: "50%", background: B.green, boxShadow: `0 0 6px ${B.green}`, animation: "pulse 2s infinite" }} />}
+            {loading ? "Connecting..." : connected ? "ELD Live" : "Connect ELD"}
+          </button>
+
+          {open && (
+            <div className="panel-enter" style={{
+              position: "absolute", top: "100%", right: 0, marginTop: 6,
+              background: B.card, border: `1.5px solid ${connected ? "rgba(102,187,106,0.3)" : B.bdrL}`,
+              borderRadius: 10, padding: 14, zIndex: 200, width: 280,
+              boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
+            }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: B.text, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Samsara ELD Integration
+              </div>
+
+              {!connected ? (
+                <>
+                  <div style={{ fontSize: 9, color: B.muted, marginBottom: 8 }}>
+                    Enter your Samsara API token to pull real driver HOS data. Token is stored in server memory only — never saved to disk.
+                  </div>
+                  <input
+                    type="password"
+                    placeholder="Samsara API Token"
+                    value={token}
+                    onChange={(e) => setToken(e.target.value)}
+                    style={{
+                      width: "100%", padding: "7px 10px", borderRadius: 6,
+                      background: B.surface, border: `1px solid ${B.bdrL}`,
+                      color: B.text, fontSize: 11, fontFamily: "'Montserrat', sans-serif",
+                      outline: "none", marginBottom: 8,
+                    }}
+                    onKeyDown={(e) => { if (e.key === "Enter" && token) { onConnect(token); setToken(""); } }}
+                  />
+                  {error && <div style={{ fontSize: 9, color: B.cancelRed, marginBottom: 6 }}>{error}</div>}
+                  <button
+                    onClick={() => { if (token) { onConnect(token); setToken(""); } }}
+                    disabled={!token || loading}
+                    style={{
+                      width: "100%", padding: "6px 0", borderRadius: 6, border: "none",
+                      background: token ? B.red : B.surface, color: token ? "#fff" : B.dim,
+                      fontSize: 10, fontWeight: 700, cursor: token ? "pointer" : "not-allowed",
+                      fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                    }}
+                  >
+                    {loading ? "Validating..." : "Connect"}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: 9, color: B.greenL, marginBottom: 6 }}>
+                    ● Connected to Samsara — HOS data refreshes every 60s
+                  </div>
+                  {matchInfo && (
+                    <div style={{ fontSize: 9, color: matchInfo.unmatched > 0 ? B.gold : B.muted, marginBottom: 6 }}>
+                      {matchInfo.matched}/{matchInfo.total} drivers matched
+                      {matchInfo.unmatched > 0 && ` · ${matchInfo.unmatched} unmatched`}
+                    </div>
+                  )}
+                  <button
+                    onClick={() => { onDisconnect(); setOpen(false); }}
+                    style={{
+                      width: "100%", padding: "6px 0", borderRadius: 6,
+                      background: "rgba(239,83,80,0.1)", color: B.cancelRed,
+                      border: `1px solid rgba(239,83,80,0.3)`, fontSize: 10, fontWeight: 700,
+                      cursor: "pointer", fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                    }}
+                  >
+                    Disconnect
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // ─── Fuzzy Name Matching ──────────────────────────────────
+    function normalizeName(name) {
+      return (name || "").toLowerCase().trim().replace(/[^a-z\s]/g, "").replace(/\s+/g, " ");
+    }
+
+    function levenshtein(a, b) {
+      const m = a.length, n = b.length;
+      const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+      for (let i = 0; i <= m; i++) dp[i][0] = i;
+      for (let j = 0; j <= n; j++) dp[0][j] = j;
+      for (let i = 1; i <= m; i++)
+        for (let j = 1; j <= n; j++)
+          dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      return dp[m][n];
+    }
+
+    function matchDriverNames(csvDrivers, samsaraDrivers) {
+      const matchMap = {}; // csvDriverId → samsaraDriverId
+      const unmatched = [];
+      const samsaraList = (samsaraDrivers || []).map(sd => ({
+        id: sd.id,
+        name: sd.name || "",
+        norm: normalizeName(sd.name),
+        parts: normalizeName(sd.name).split(" "),
+      }));
+
+      for (const csvD of csvDrivers) {
+        const csvNorm = normalizeName(csvD.label);
+        const csvParts = csvNorm.split(" ");
+
+        // 1. Exact normalized match
+        let match = samsaraList.find(s => s.norm === csvNorm);
+
+        // 2. Last name + first initial
+        if (!match && csvParts.length >= 2) {
+          const csvLast = csvParts[csvParts.length - 1];
+          const csvFirstInit = csvParts[0][0];
+          match = samsaraList.find(s =>
+            s.parts.length >= 2 &&
+            s.parts[s.parts.length - 1] === csvLast &&
+            s.parts[0][0] === csvFirstInit
+          );
+        }
+
+        // 3. Reversed name match (Samsara may store "Last, First")
+        if (!match && csvParts.length >= 2) {
+          const reversed = [...csvParts].reverse().join(" ");
+          match = samsaraList.find(s => s.norm === reversed);
+        }
+
+        // 4. Levenshtein similarity > 0.8
+        if (!match) {
+          let bestScore = 0, bestMatch = null;
+          for (const s of samsaraList) {
+            const maxLen = Math.max(csvNorm.length, s.norm.length);
+            if (maxLen === 0) continue;
+            const similarity = 1 - levenshtein(csvNorm, s.norm) / maxLen;
+            if (similarity > 0.8 && similarity > bestScore) {
+              bestScore = similarity;
+              bestMatch = s;
+            }
+          }
+          match = bestMatch;
+        }
+
+        if (match) {
+          matchMap[csvD.id] = match.id;
+        } else {
+          unmatched.push(csvD.label);
+        }
+      }
+
+      return { matchMap, unmatched, matched: csvDrivers.length - unmatched.length, total: csvDrivers.length };
+    }
+
+    // ─── Enrich Drivers with HOS Data ─────────────────────────
+    function enrichWithHOS(drivers, hosData, matchMap) {
+      if (!hosData || !hosData.data) return drivers;
+      const hosDrivers = hosData.data;
+
+      return drivers.map(d => {
+        const samsaraId = matchMap[d.id];
+        if (!samsaraId) return d;
+
+        const hosEntry = hosDrivers.find(h => h.driver?.id === samsaraId);
+        if (!hosEntry) return d;
+
+        const clocks = hosEntry.clocks || {};
+        // Samsara returns durations in milliseconds
+        const driveRemainingMs = clocks.driveRemaining?.timeRemainingMs ?? null;
+        const dutyRemainingMs = clocks.shiftRemaining?.timeRemainingMs ?? null;
+        const cycleRemainingMs = clocks.cycleRemaining?.timeRemainingMs ?? null;
+
+        const driveRemainingMin = driveRemainingMs !== null ? Math.round(driveRemainingMs / 60000) : null;
+        const dutyRemainingMin = dutyRemainingMs !== null ? Math.round(dutyRemainingMs / 60000) : null;
+        const cycleRemainingMin = cycleRemainingMs !== null ? Math.round(cycleRemainingMs / 60000) : null;
+
+        // Current duty status
+        const currentStatus = hosEntry.currentDutyStatus?.hosStatusType || null;
+        const statusMap = {
+          "driving": "driving",
+          "onDuty": "on_duty",
+          "offDuty": "off_duty",
+          "sleeperBerth": "sleeper_berth",
+        };
+
+        // Calculate real weekly hours from cycle (70-hr cycle minus remaining)
+        const cycleMaxMin = 70 * 60; // 70 hours in minutes
+        const realWeeklyHours = cycleRemainingMin !== null
+          ? Math.round((cycleMaxMin - cycleRemainingMin) / 6) / 10 // hours used, 1 decimal
+          : d.estWeeklyHours;
+
+        return {
+          ...d,
+          hosStatus: statusMap[currentStatus] || currentStatus,
+          hosDriveRemaining: driveRemainingMin,
+          hosDutyRemaining: dutyRemainingMin,
+          hosCycleRemaining: cycleRemainingMin,
+          estWeeklyHours: realWeeklyHours, // Override CSV estimate with real data
+          hosSource: "samsara",
+        };
+      });
+    }
+
     const LOGO_SRC = "Joyride-logo-header-footer-01-768x293.png";
 
     const JoyrideLogo = ({ height = 40 }) => (
@@ -438,7 +663,7 @@
             </div>
             {availableBackups.length > 0 && (availableBackups[0].blocksRemaining !== undefined || availableBackups[0].hoursScore > 0) && (
               <div style={{ fontSize: 8, color: B.dim, textAlign: "center", marginBottom: 4, fontStyle: "italic" }}>
-                Ranked by proximity & availability (3 blks/wk max)
+                Ranked by proximity{availableBackups[0].hosSource ? ", HOS availability" : ""} & blocks (3 blks/wk max)
               </div>
             )}
             {availableBackups.length === 0 ? (
@@ -475,7 +700,12 @@
                             {d.blocksUsed}/3
                           </span>
                           {d.proximityScore > 0 && <span style={{ fontSize: 7, color: B.greenL }}>· {d.proximityScore} shared</span>}
-                          {d.totalMiles > 0 && <span style={{ fontSize: 7, color: B.dim }}>{d.totalMiles}mi</span>}
+                          {d.hosDutyRemaining !== undefined && (
+                            <span style={{ fontSize: 7, color: d.hosDutyRemaining > 480 ? B.greenL : d.hosDutyRemaining > 240 ? B.gold : B.cancelRed, fontWeight: 600 }}>
+                              · {Math.round(d.hosDutyRemaining / 60)}h duty
+                            </span>
+                          )}
+                          {d.totalMiles > 0 && !d.hosSource && <span style={{ fontSize: 7, color: B.dim }}>{d.totalMiles}mi</span>}
                         </div>
                       )}
                     </div>
@@ -522,6 +752,15 @@
       const [csvRegions, setCsvRegions] = useState([]);
       const [csvStats, setCsvStats] = useState(null);
 
+      // Samsara ELD state
+      const [samsaraConnected, setSamsaraConnected] = useState(false);
+      const [samsaraDrivers, setSamsaraDrivers] = useState(null);
+      const [samsaraHOS, setSamsaraHOS] = useState(null);
+      const [samsaraLoading, setSamsaraLoading] = useState(false);
+      const [samsaraError, setSamsaraError] = useState(null);
+      const [driverMatchMap, setDriverMatchMap] = useState({});
+      const [samsaraMatchInfo, setSamsaraMatchInfo] = useState(null);
+
       // Save/restore state per mode so switching tabs preserves work
       const savedStates = useRef({});
 
@@ -554,6 +793,88 @@
         savedStates.current = {};
       };
 
+      // ─── Samsara ELD Functions ─────────────────────────────
+      const fetchSamsaraData = async () => {
+        try {
+          const [driversRes, hosRes] = await Promise.all([
+            fetch("/api/samsara/drivers").then(r => r.json()),
+            fetch("/api/samsara/hos/clocks").then(r => r.json()),
+          ]);
+          setSamsaraDrivers(driversRes);
+          setSamsaraHOS(hosRes);
+          return { drivers: driversRes, hos: hosRes };
+        } catch (e) {
+          console.error("Samsara fetch error:", e);
+          return null;
+        }
+      };
+
+      const handleSamsaraConnect = async (token) => {
+        setSamsaraLoading(true);
+        setSamsaraError(null);
+        try {
+          const res = await fetch("/api/samsara/connect", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token }),
+          });
+          const data = await res.json();
+          if (data.connected) {
+            setSamsaraConnected(true);
+            const fetched = await fetchSamsaraData();
+            // Do initial driver matching if CSV is loaded
+            if (fetched?.drivers?.data && csvRows) {
+              const csvData = transformCSVData(csvRows, csvRegion);
+              const matchResult = matchDriverNames(csvData.drivers, fetched.drivers.data);
+              setDriverMatchMap(matchResult.matchMap);
+              setSamsaraMatchInfo({ matched: matchResult.matched, total: matchResult.total, unmatched: matchResult.unmatched.length });
+            }
+          } else {
+            setSamsaraError(data.error || "Connection failed");
+          }
+        } catch (e) {
+          setSamsaraError(e.message);
+        } finally {
+          setSamsaraLoading(false);
+        }
+      };
+
+      const handleSamsaraDisconnect = async () => {
+        try { await fetch("/api/samsara/disconnect", { method: "DELETE" }); } catch {}
+        setSamsaraConnected(false);
+        setSamsaraDrivers(null);
+        setSamsaraHOS(null);
+        setDriverMatchMap({});
+        setSamsaraMatchInfo(null);
+      };
+
+      // Check Samsara connection status on load
+      useEffect(() => {
+        fetch("/api/samsara/status").then(r => r.json()).then(data => {
+          if (data.connected) {
+            setSamsaraConnected(true);
+            fetchSamsaraData();
+          }
+        }).catch(() => {});
+      }, []);
+
+      // Poll HOS data every 60 seconds when connected
+      useEffect(() => {
+        if (!samsaraConnected) return;
+        const interval = setInterval(fetchSamsaraData, 60000);
+        return () => clearInterval(interval);
+      }, [samsaraConnected]);
+
+      // Re-match drivers when CSV data or Samsara drivers change
+      useEffect(() => {
+        if (samsaraConnected && samsaraDrivers?.data && csvRows) {
+          const csvData = transformCSVData(csvRows, csvRegion);
+          const matchResult = matchDriverNames(csvData.drivers, samsaraDrivers.data);
+          setDriverMatchMap(matchResult.matchMap);
+          setSamsaraMatchInfo({ matched: matchResult.matched, total: matchResult.total, unmatched: matchResult.unmatched.length });
+        }
+      }, [csvRows, csvRegion, samsaraDrivers, samsaraConnected]);
+
       const handleRegionChange = (r) => {
         setCsvRegion(r);
         setCancelledBlocks({});
@@ -567,6 +888,10 @@
 
       // Build data from CSV or fallback to demo MODELS
       const data = csvRows ? transformCSVData(csvRows, csvRegion) : buildData(MODELS[mode]);
+      // Enrich with Samsara HOS data if connected
+      if (samsaraConnected && samsaraHOS && csvRows) {
+        data.drivers = enrichWithHOS(data.drivers, samsaraHOS, driverMatchMap);
+      }
       const { drivers: DRIVERS, trucks: TRUCKS, blocksPerLoad, hasPrimarySecondary } = data;
       const BLOCK_NUMS = Array.from({ length: blocksPerLoad }, (_, i) => i + 1);
 
@@ -640,6 +965,8 @@
           if (d.id === truck.primaryDriver || d.id === truck.secondaryDriver) return false;
           // In CSV mode, filter out drivers already at max blocks
           if (csvRows && d.blockCount >= MAX_BLOCKS_PER_WEEK) return false;
+          // Filter out drivers with < 4 hours duty remaining (legally insufficient)
+          if (samsaraConnected && d.hosDutyRemaining !== undefined && d.hosDutyRemaining < 240) return false;
           for (const bk of Object.keys(cancelledBlocks)) {
             if (!cancelledBlocks[bk]) continue;
             if (cascadeCancelled[bk]) continue;
@@ -660,9 +987,15 @@
           return { ...d, homeTruck: homeTruck?.id, homeTruckLabel, proximityScore, sharedFacilities, hoursScore: d.estWeeklyHours || 0, blocksUsed, blocksRemaining };
         });
 
-        // Sort: highest proximity first, then most blocks remaining first (fewest used)
+        // Sort: proximity first, then HOS duty remaining (if Samsara), then blocks used
         available.sort((a, b) => {
           if (b.proximityScore !== a.proximityScore) return b.proximityScore - a.proximityScore;
+          // When Samsara connected, prefer drivers with more duty hours remaining
+          if (samsaraConnected) {
+            const aHOS = a.hosDutyRemaining ?? Infinity;
+            const bHOS = b.hosDutyRemaining ?? Infinity;
+            if (bHOS !== aHOS) return bHOS - aHOS;
+          }
           return a.blocksUsed - b.blocksUsed;
         });
 
@@ -882,6 +1215,14 @@
                 <RegionTabs regions={csvRegions} active={csvRegion} onSelect={handleRegionChange} />
               )}
               <CSVUpload onUpload={handleCSVUpload} onClear={handleCSVClear} hasData={!!csvRows} />
+              <SamsaraConnect
+                connected={samsaraConnected}
+                onConnect={handleSamsaraConnect}
+                onDisconnect={handleSamsaraDisconnect}
+                loading={samsaraLoading}
+                error={samsaraError}
+                matchInfo={samsaraMatchInfo}
+              />
               {csvStats && (() => {
                 const avail = DRIVERS.filter(d => d.blockCount < MAX_BLOCKS_PER_WEEK).length;
                 const maxed = DRIVERS.filter(d => d.blockCount >= MAX_BLOCKS_PER_WEEK).length;
@@ -971,6 +1312,21 @@
                 ].map(s => (
                   <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: B.muted }}>
                     <span style={{ width: 10, height: 3, background: s.color, borderRadius: 1 }} />
+                    {s.label}
+                  </span>
+                ))}
+              </span>
+            )}
+            {samsaraConnected && (
+              <span style={{ display: "flex", gap: 5, alignItems: "center", marginLeft: 4, borderLeft: `1px solid ${B.bdr}`, paddingLeft: 8 }}>
+                <span style={{ fontSize: 8, color: B.dim, fontWeight: 600 }}>HOS:</span>
+                {[
+                  { color: B.green, label: "Driving" },
+                  { color: B.gold, label: "On Duty" },
+                  { color: "#64b5f6", label: "Sleeper" },
+                ].map(s => (
+                  <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: B.muted }}>
+                    <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.color }} />
                     {s.label}
                   </span>
                 ))}
@@ -1094,7 +1450,7 @@
                 const isSel = selectedDriver === d.id;
                 return (
                   <div key={d.id} ref={(el) => (driverRefs.current[d.id] = el)}
-                    title={csvRows ? `${d.label}\n${d.blockCount}/3 blocks · ${d.totalMiles}mi · ${d.tripCount} trips\n${d.estWeeklyHours || 0}h est/wk\nFacilities: ${(d.facilities || []).slice(0, 6).join(", ")}${(d.facilities || []).length > 6 ? ` +${d.facilities.length - 6} more` : ""}` : ""}
+                    title={csvRows ? `${d.label}\n${d.blockCount}/3 blocks · ${d.totalMiles}mi · ${d.tripCount} trips\n${d.hosSource ? `HOS: ${d.hosStatus || "unknown"} · ${d.hosDutyRemaining != null ? Math.round(d.hosDutyRemaining / 60) + "h duty left" : ""}` : `${d.estWeeklyHours || 0}h est/wk`}\nFacilities: ${(d.facilities || []).slice(0, 6).join(", ")}${(d.facilities || []).length > 6 ? ` +${d.facilities.length - 6} more` : ""}` : ""}
                     onMouseEnter={() => setHoveredDriver(d.id)} onMouseLeave={() => setHoveredDriver(null)}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -1120,9 +1476,20 @@
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{
                         fontSize: csvRows ? 11 : 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                        color: isMaxed ? B.dim : B.text,
+                        color: isMaxed ? B.dim : B.text, display: "flex", alignItems: "center", gap: 4,
                       }}>
-                        {d.label}
+                        {d.hosSource && d.hosStatus && (
+                          <span style={{
+                            width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                            background: d.hosStatus === "driving" ? B.green
+                              : d.hosStatus === "on_duty" ? B.gold
+                              : d.hosStatus === "sleeper_berth" ? "#64b5f6"
+                              : "rgba(255,255,255,0.2)",
+                            border: d.hosStatus === "off_duty" ? `1.5px solid ${B.dim}` : "none",
+                            boxShadow: d.hosStatus === "driving" ? `0 0 4px ${B.green}` : "none",
+                          }} />
+                        )}
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
                       </div>
                       {csvRows && (
                         <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
@@ -1139,9 +1506,21 @@
                             </span>
                           </div>
                           <div style={{ fontSize: 7, color: B.dim, display: "flex", gap: 3 }}>
-                            <span>{d.totalMiles}mi</span>
-                            <span>·</span>
-                            <span>{d.tripCount}t</span>
+                            {d.hosSource ? (
+                              <>
+                                <span style={{ color: d.hosDutyRemaining > 480 ? B.greenL : d.hosDutyRemaining > 240 ? B.gold : B.cancelRed }}>
+                                  {Math.round((d.hosDutyRemaining || 0) / 60)}h duty
+                                </span>
+                                <span>·</span>
+                                <span>{d.tripCount}t</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>{d.totalMiles}mi</span>
+                                <span>·</span>
+                                <span>{d.tripCount}t</span>
+                              </>
+                            )}
                             {isMaxed && (
                               <>
                                 <span>·</span>
@@ -1304,12 +1683,39 @@
                       <div style={{ fontSize: 18, fontWeight: 700, color: B.text }}>{selectedDriverInfo.tripCount || 0}</div>
                       <div style={{ fontSize: 9, color: B.dim }}>Trips</div>
                     </div>
+                    {selectedDriverInfo.hosSource && (
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.hosDutyRemaining || 0) > 480 ? B.greenL : (selectedDriverInfo.hosDutyRemaining || 0) > 240 ? B.gold : B.cancelRed }}>
+                          {Math.round((selectedDriverInfo.hosDutyRemaining || 0) / 60)}h
+                        </div>
+                        <div style={{ fontSize: 9, color: B.dim }}>Duty Left</div>
+                      </div>
+                    )}
                     <div style={{ textAlign: "center" }}>
                       <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.blockCount || 0) >= 3 ? B.cancelRed : B.green }}>
                         {(selectedDriverInfo.blockCount || 0) >= 3 ? "MAXED" : "AVAILABLE"}
                       </div>
                       <div style={{ fontSize: 9, color: B.dim }}>Backup Status</div>
                     </div>
+                    {selectedDriverInfo.hosSource && selectedDriverInfo.hosStatus && (
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{
+                          fontSize: 10, fontWeight: 700, textTransform: "uppercase",
+                          padding: "4px 8px", borderRadius: 4,
+                          background: selectedDriverInfo.hosStatus === "driving" ? B.greenBg
+                            : selectedDriverInfo.hosStatus === "on_duty" ? B.goldBg
+                            : selectedDriverInfo.hosStatus === "sleeper_berth" ? "rgba(100,181,246,0.1)"
+                            : "rgba(255,255,255,0.04)",
+                          color: selectedDriverInfo.hosStatus === "driving" ? B.green
+                            : selectedDriverInfo.hosStatus === "on_duty" ? B.gold
+                            : selectedDriverInfo.hosStatus === "sleeper_berth" ? "#64b5f6"
+                            : B.dim,
+                        }}>
+                          {selectedDriverInfo.hosStatus.replace("_", " ")}
+                        </div>
+                        <div style={{ fontSize: 9, color: B.dim, marginTop: 2 }}>ELD Status</div>
+                      </div>
+                    )}
                   </div>
                 )}
                 <button onClick={() => setSelectedDriver(null)} style={{
