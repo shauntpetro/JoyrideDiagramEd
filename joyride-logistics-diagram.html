@@ -233,26 +233,83 @@
         loadId++;
       });
 
+      // ── Step 5: Build per-driver block list and domicile info ──
+      // Determine each driver's domicile from their most-used Operator ID region
+      const driverDomicileMap = {}; // driverName → region
+      const driverRegionCount = {}; // driverName → { region → count }
+      rows.forEach(row => {
+        const name = (row["Driver Name"] || "").trim();
+        const opId = (row["Operator ID"] || "").trim();
+        if (!name || !opId) return;
+        const parts = opId.split("_");
+        if (parts.length < 2) return;
+        const region = parts[1];
+        if (!driverRegionCount[name]) driverRegionCount[name] = {};
+        driverRegionCount[name][region] = (driverRegionCount[name][region] || 0) + 1;
+      });
+      Object.entries(driverRegionCount).forEach(([name, regions]) => {
+        driverDomicileMap[name] = Object.entries(regions).sort((a, b) => b[1] - a[1])[0][0];
+      });
+
+      // Build per-driver block data (which blocks does each driver actually have)
+      const driverBlocksMap = {}; // driverId → [{ blockId, truckId, truckLabel, trips, stage }]
+      trucks.forEach(truck => {
+        (truck.blockIds || []).forEach((blockId, idx) => {
+          const driverId = truck.blockDrivers?.[idx];
+          if (!driverId) return;
+          if (!driverBlocksMap[driverId]) driverBlocksMap[driverId] = [];
+          const trips = truck.blockTrips?.[blockId] || [];
+          const stages = trips.map(t => t.stage).filter(Boolean);
+          const dominantStage = stages.length > 0
+            ? Object.entries(stages.reduce((acc, s) => { acc[s] = (acc[s] || 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1])[0]?.[0]
+            : null;
+          driverBlocksMap[driverId].push({
+            blockId, truckId: truck.id, truckLabel: truck.operatorId,
+            trips, stage: dominantStage,
+            totalMiles: Math.round(trips.reduce((s, t) => s + t.distance, 0)),
+          });
+        });
+      });
+
+      // Number drivers within each domicile
+      const domicileNumbers = {}; // region → counter
+      const driversByDomicile = {}; // region → [driverName]
+      allDriverNames.forEach(name => {
+        const dom = driverDomicileMap[name] || "OTHER";
+        if (!driversByDomicile[dom]) driversByDomicile[dom] = [];
+        driversByDomicile[dom].push(name);
+      });
+
       const drivers = allDriverNames.map(name => {
         const s = driverStats[name] || {};
+        const dom = driverDomicileMap[name] || "OTHER";
+        if (!domicileNumbers[dom]) domicileNumbers[dom] = 1;
+        const driverNum = domicileNumbers[dom]++;
+        const dId = driverSet.get(name);
         return {
-          id: driverSet.get(name), label: name,
+          id: dId, label: name,
           totalMiles: Math.round(s.totalMiles || 0),
           estWeeklyHours: s.estWeeklyHours || 0,
           tripCount: s.tripCount || 0,
           blockCount: s.blockIds ? s.blockIds.size : 0,
           facilities: s.facilities ? [...s.facilities] : [],
           workTypes: s.workTypes ? [...s.workTypes] : [],
+          domicile: dom,
+          driverNumber: driverNum,
+          blocks: driverBlocksMap[dId] || [],
         };
       });
 
       const maxBlocks = Math.min(Math.max(...trucks.map(t => t.blockCount), 1), 6);
       const hasPrimSec = trucks.some(t => t.secondaryDriver !== null);
 
+      // Get ordered list of domiciles present
+      const domicileOrder = [...new Set(drivers.map(d => d.domicile))].sort();
+
       return {
         drivers, trucks, blocksPerLoad: maxBlocks, hasPrimarySecondary: hasPrimSec,
         regions: [...regions].sort(), totalTrips: rows.length, csvMode: true,
-        driverStats, // expose for backup ranking
+        driverStats, driverBlocksMap, domicileOrder,
       };
     }
 
@@ -1361,16 +1418,196 @@
             </span>
           </div>
 
+          {/* ═══ CSV MODE: Driver-centric row layout ═══ */}
+          {csvRows && (
+            <div key={`csv-${csvRegion}`} ref={containerRef} style={{ padding: "16px 20px", background: B.bg }}>
+              {/* Search & Sort Header */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 16, fontWeight: 700, color: B.red }}>{DRIVERS.length}</span>
+                <input
+                  placeholder="Search drivers..." value={driverSearch} onChange={(e) => setDriverSearch(e.target.value)}
+                  style={{ padding: "5px 10px", borderRadius: 6, background: B.surface, border: `1px solid ${B.bdrL}`, color: B.text, fontSize: 11, fontFamily: "'Montserrat', sans-serif", outline: "none", width: 180 }}
+                />
+                {["default", "available", "name", "miles"].map(s => (
+                  <button key={s} onClick={() => setDriverSort(s)} style={{
+                    padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, cursor: "pointer",
+                    fontFamily: "'Montserrat', sans-serif", border: "none",
+                    background: driverSort === s ? "rgba(193,59,64,0.2)" : "rgba(255,255,255,0.04)",
+                    color: driverSort === s ? B.redLight : B.dim,
+                  }}>{s === "default" ? "Default" : s === "available" ? "Avail ↑" : s === "name" ? "A-Z" : "Miles ↓"}</button>
+                ))}
+                <span style={{ marginLeft: "auto", fontSize: 10, color: B.muted }}>
+                  {data.domicileOrder?.length || 0} domiciles · {TRUCKS.length} seats · Max {MAX_BLOCKS_PER_WEEK} blks/wk
+                </span>
+              </div>
+
+              {/* Column headers */}
+              <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "6px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 4 }}>
+                <div style={{ width: 36, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center" }}>#</div>
+                <div style={{ width: 200, fontSize: 8, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
+                {[1, 2, 3].map(n => (
+                  <div key={n} style={{ width: 120, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
+                ))}
+              </div>
+
+              {/* Driver rows grouped by domicile */}
+              {(data.domicileOrder || [])
+                .filter(dom => csvRegion === "ALL" || dom === csvRegion)
+                .map(dom => {
+                const domDrivers = DRIVERS
+                  .filter(d => d.domicile === dom)
+                  .filter(d => !driverSearch || d.label.toLowerCase().includes(driverSearch.toLowerCase()))
+                  .sort((a, b) => {
+                    if (driverSort === "available") return (a.blockCount || 0) - (b.blockCount || 0);
+                    if (driverSort === "name") return a.label.localeCompare(b.label);
+                    if (driverSort === "miles") return (b.totalMiles || 0) - (a.totalMiles || 0);
+                    return a.driverNumber - b.driverNumber;
+                  });
+                if (domDrivers.length === 0) return null;
+                return (
+                  <div key={dom}>
+                    {/* Domicile section header */}
+                    <div style={{
+                      display: "flex", alignItems: "center", gap: 8, padding: "10px 0 6px",
+                      borderBottom: `1px solid rgba(193,59,64,0.15)`, marginBottom: 2, marginTop: 8,
+                    }}>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: B.red, letterSpacing: 1, textTransform: "uppercase" }}>{dom}</span>
+                      <span style={{ fontSize: 9, color: B.dim }}>({domDrivers.length} driver{domDrivers.length !== 1 ? "s" : ""})</span>
+                      <div style={{ flex: 1, height: 1, background: "rgba(193,59,64,0.12)" }} />
+                    </div>
+
+                    {/* Driver rows */}
+                    {domDrivers.map((d, dIdx) => {
+                      const isSel = selectedDriver === d.id;
+                      const isHov = hoveredDriver === d.id;
+                      const isBkp = isDriverBackup(d.id);
+                      const isMaxed = d.blockCount >= MAX_BLOCKS_PER_WEEK;
+                      const driverBlocks = d.blocks || [];
+
+                      return (
+                        <div
+                          key={d.id}
+                          ref={(el) => (driverRefs.current[d.id] = el)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedDriver(isSel ? null : d.id);
+                            setSelectedTruck(null);
+                          }}
+                          onMouseEnter={() => setHoveredDriver(d.id)}
+                          onMouseLeave={() => setHoveredDriver(null)}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 0, padding: "6px 0",
+                            cursor: "pointer", borderRadius: 6, transition: "all 0.15s",
+                            background: isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
+                            borderLeft: isSel ? `3px solid ${B.red}` : "3px solid transparent",
+                            opacity: isMaxed && !isSel ? 0.6 : 1,
+                          }}
+                        >
+                          {/* Col A: Driver number */}
+                          <div style={{ width: 36, textAlign: "center", fontSize: 11, fontWeight: 700, color: B.dim, flexShrink: 0 }}>
+                            {d.driverNumber}
+                          </div>
+
+                          {/* Col B: Driver name + stats */}
+                          <div style={{ width: 200, minWidth: 0, flexShrink: 0, paddingRight: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: isMaxed ? B.dim : B.text }}>
+                              {d.hosSource && d.hosStatus && (
+                                <span style={{
+                                  width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                                  background: d.hosStatus === "driving" ? B.green : d.hosStatus === "on_duty" ? B.gold : d.hosStatus === "sleeper_berth" ? "#64b5f6" : "rgba(255,255,255,0.2)",
+                                  border: d.hosStatus === "off_duty" ? `1.5px solid ${B.dim}` : "none",
+                                  boxShadow: d.hosStatus === "driving" ? `0 0 4px ${B.green}` : "none",
+                                }} />
+                              )}
+                              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                            </div>
+                            <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                              <div style={{ width: 40, height: 3, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                                <div style={{
+                                  height: "100%", borderRadius: 2, transition: "width 0.3s",
+                                  width: `${Math.min((d.blockCount / 3) * 100, 100)}%`,
+                                  background: d.blockCount >= 3 ? B.cancelRed : d.blockCount >= 2 ? B.gold : B.green,
+                                }} />
+                              </div>
+                              <span style={{ fontSize: 8, color: d.blockCount >= 3 ? B.cancelRed : B.dim, fontWeight: d.blockCount >= 3 ? 700 : 400 }}>
+                                {d.blockCount}/3
+                              </span>
+                              {d.hosSource ? (
+                                <span style={{ fontSize: 7, color: (d.hosDutyRemaining || 0) > 480 ? B.greenL : (d.hosDutyRemaining || 0) > 240 ? B.gold : B.cancelRed }}>
+                                  {Math.round((d.hosDutyRemaining || 0) / 60)}h duty
+                                </span>
+                              ) : (
+                                <span style={{ fontSize: 7, color: B.dim }}>{d.totalMiles}mi · {d.tripCount}t</span>
+                              )}
+                              {isMaxed && <span style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
+                              {isBkp && <span style={{ fontSize: 7, color: B.bkpL, fontWeight: 600 }}>BKP</span>}
+                            </div>
+                          </div>
+
+                          {/* Cols C, D, E: Driver's blocks */}
+                          {driverBlocks.map((blk, bIdx) => {
+                            // Find the truck/seat this block belongs to
+                            const truck = TRUCKS.find(t => t.id === blk.truckId);
+                            const blockIndex = truck?.blockIds?.indexOf(blk.blockId);
+                            const bn = blockIndex !== undefined && blockIndex >= 0 ? blockIndex + 1 : bIdx + 1;
+                            const key = blockKey(blk.truckId, bn);
+                            const isCancelled = !!cancelledBlocks[key];
+                            const backup = blockBackups[key];
+                            const isAssigning = assigningBlock === key;
+                            const available = isAssigning ? getAvailableForBlock(blk.truckId, bn) : [];
+                            const stageColor = blk.stage ? STAGE_COLORS[blk.stage] : null;
+
+                            return (
+                              <div key={blk.blockId} style={{ width: 120, flexShrink: 0 }}>
+                                <BlockNode
+                                  label={blk.blockId.slice(0, 8)}
+                                  driverLabel=""
+                                  driverName=""
+                                  highlight={false}
+                                  cancelled={isCancelled}
+                                  dropped={!!droppedBlocks[key]}
+                                  backupAssigned={backup}
+                                  backupName={backup ? getDriverName(backup) : null}
+                                  assigning={isAssigning}
+                                  compact={true}
+                                  stageColor={stageColor}
+                                  tooltip={`${blk.blockId}\nSeat: ${blk.truckLabel}\n${blk.trips.length} trips · ${blk.totalMiles} mi\n${blk.trips.map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`}
+                                  availableBackups={available.map((ad) => ({ ...ad, onSelect: () => assignBlockBackup(blk.truckId, bn, ad.id) }))}
+                                  onCancel={() => toggleBlockCancel(blk.truckId, bn)}
+                                  onAssign={() => setAssigningBlock(isAssigning ? null : key)}
+                                  onRemoveBackup={() => removeBlockBackup(blk.truckId, bn)}
+                                  onDrop={() => dropBlock(blk.truckId, bn)}
+                                  onUndrop={() => undropBlock(blk.truckId, bn)}
+                                />
+                              </div>
+                            );
+                          })}
+
+                          {/* Empty block slots */}
+                          {Array.from({ length: Math.max(0, 3 - driverBlocks.length) }).map((_, i) => (
+                            <div key={`empty-${i}`} style={{ width: 120, flexShrink: 0 }}>
+                              <div style={{
+                                width: "100%", height: 42, borderRadius: 8,
+                                border: `1px dashed rgba(255,255,255,0.04)`,
+                              }} />
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ═══ DEMO MODE: Two-column layout with connection lines ═══ */}
+          {!csvRows && (
           <div key={`${mode}-${csvRegion}`} ref={containerRef} style={{ position: "relative", display: "flex", padding: "24px 20px", gap: 0, background: B.bg }}>
 
             {positions && effectiveShowLines && (
               <svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1 }}>
                 {connections.filter(({ driverId, truckId, type }) => {
-                  // In CSV mode with selected/hovered driver, only show their lines
-                  if (csvRows && (selectedDriver || hoveredDriver)) {
-                    const relevantDriver = selectedDriver || hoveredDriver;
-                    return driverId === relevantDriver || type === "backup";
-                  }
                   return true;
                 }).map(({ driverId, truckId, type }) => {
                   const dp = positions.drivers[driverId];
@@ -1668,6 +1905,7 @@
               })}
             </div>
           </div>
+          )}
 
           {/* Driver Detail Panel */}
           {selectedDriver && selectedDriverInfo && (
