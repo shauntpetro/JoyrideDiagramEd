@@ -208,6 +208,13 @@
             stop2Arr: (row["Stop 2 Planned Arrival"] || "").trim(),
             stage: (row["Trip Stage"] || "").trim(),
             driver: (row["Driver Name"] || "").trim(),
+            // Date/time fields
+            stop1ArrDate: (row["Stop 1 Planned Arrival Date"] || "").trim(),
+            stop1ArrTime: (row["Stop 1 Planned Arrival Time"] || "").trim(),
+            stop1DepDate: (row["Stop 1  Planned Departure Date"] || "").trim(),
+            stop1DepTime: (row["Stop 1  Planned Departure Time"] || "").trim(),
+            stop2ArrDate: (row["Stop 2 Planned Arrival Date"] || "").trim(),
+            stop2ArrTime: (row["Stop 2 Planned Arrival Time"] || "").trim(),
           });
           // Track which driver owns each block
           const dName = (row["Driver Name"] || "").trim();
@@ -263,10 +270,24 @@
           const dominantStage = stages.length > 0
             ? Object.entries(stages.reduce((acc, s) => { acc[s] = (acc[s] || 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1])[0]?.[0]
             : null;
+          // Compute block start (earliest Stop 1 arrival) and end (latest Stop 2 arrival)
+          let blockStart = null, blockEnd = null;
+          trips.forEach(t => {
+            if (t.stop1ArrDate && t.stop1ArrTime) {
+              const dt = `${t.stop1ArrDate} ${t.stop1ArrTime}`;
+              if (!blockStart || dt < blockStart) blockStart = dt;
+            }
+            if (t.stop2ArrDate && t.stop2ArrTime) {
+              const dt = `${t.stop2ArrDate} ${t.stop2ArrTime}`;
+              if (!blockEnd || dt > blockEnd) blockEnd = dt;
+            }
+          });
+
           driverBlocksMap[driverId].push({
             blockId, truckId: truck.id, truckLabel: truck.operatorId,
             trips, stage: dominantStage,
             totalMiles: Math.round(trips.reduce((s, t) => s + t.distance, 0)),
+            blockStart, blockEnd,
           });
         });
       });
@@ -650,7 +671,21 @@
       "History": B.dim,
     };
 
-    const BlockNode = ({ label, driverLabel, driverName, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, backupName, onRemoveBackup, dropped, onDrop, onUndrop, compact, tooltip, stageColor }) => (
+    // Format "MM/DD/YYYY HH:MM" → "Mon D h:mma" (compact) or keep date if different day
+    function formatBlockTime(dtStr) {
+      if (!dtStr) return "";
+      const parts = dtStr.split(" ");
+      if (parts.length < 2) return dtStr;
+      const [month, day] = parts[0].split("/");
+      const [hr, min] = parts[1].split(":");
+      const h = parseInt(hr, 10);
+      const ampm = h >= 12 ? "p" : "a";
+      const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+      const months = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      return `${months[parseInt(month, 10)]} ${parseInt(day, 10)} ${h12}:${min}${ampm}`;
+    }
+
+    const BlockNode = ({ label, driverLabel, driverName, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, backupName, onRemoveBackup, dropped, onDrop, onUndrop, compact, tooltip, stageColor, blockStart, blockEnd }) => (
       <div className={cancelled ? "block-cancel" : ""} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: compact ? 100 : 120, position: "relative" }} title={tooltip || ""}>
         <div
           onClick={(e) => { e.stopPropagation(); (dropped ? onUndrop : onCancel)(); }}
@@ -659,13 +694,14 @@
             background: dropped ? "rgba(100,100,100,0.12)" : cancelled ? B.cancelBg : B.surface,
             border: dropped ? `2px solid ${B.dim}` : cancelled ? `2px solid ${B.cancelRed}` : `1px solid ${B.bdrL}`,
             borderTop: !dropped && !cancelled && stageColor ? `3px solid ${stageColor}` : undefined,
-            borderRadius: 10, padding: compact ? "10px 6px" : "14px 8px", textAlign: "center", cursor: "pointer",
+            borderRadius: 10, padding: compact ? "8px 5px" : "14px 8px", textAlign: "center", cursor: "pointer",
             transition: "all 0.2s ease", opacity: dropped ? 0.4 : 1,
           }}
         >
           <div style={{ fontSize: compact ? 9 : 11, fontWeight: 700, letterSpacing: 0.3, color: dropped ? B.dim : cancelled ? B.cancelRed : B.text, textDecoration: dropped ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {label}
           </div>
+          {(driverName || driverLabel) && (
           <div style={{
             fontSize: compact ? 9 : 10, marginTop: 2, fontWeight: 600,
             color: dropped ? B.dim : cancelled ? B.cancelRed : backupAssigned ? B.bkpL : B.muted,
@@ -675,6 +711,13 @@
             {dropped ? "N/A" : backupAssigned ? (backupName || `D${backupAssigned}`) : (driverName || driverLabel)}
             {backupAssigned && <span style={{ fontSize: 7, color: B.bkpL, marginLeft: 2 }}>(BKP)</span>}
           </div>
+          )}
+          {blockStart && (
+            <div style={{ fontSize: 7, color: B.dim, marginTop: 3, lineHeight: 1.3 }}>
+              <div style={{ color: B.greenL }}>{formatBlockTime(blockStart)}</div>
+              <div style={{ color: B.gold }}>{formatBlockTime(blockEnd)}</div>
+            </div>
+          )}
         </div>
         {dropped && (
           <span style={{ fontSize: 8, color: B.dim, fontWeight: 700, marginTop: 3, textTransform: "uppercase" }}>Cancelled</span>
@@ -1537,7 +1580,12 @@
                                   {Math.round((d.hosDutyRemaining || 0) / 60)}h duty
                                 </span>
                               ) : (
-                                <span style={{ fontSize: 7, color: B.dim }}>{d.totalMiles}mi · {d.tripCount}t</span>
+                                <span style={{ fontSize: 7, color: B.dim }}>
+                                  {d.estWeeklyHours > 0 ? (
+                                    <span style={{ color: d.estWeeklyHours > 40 ? B.cancelRed : d.estWeeklyHours > 25 ? B.gold : B.greenL }}>{d.estWeeklyHours}h</span>
+                                  ) : null}
+                                  {d.estWeeklyHours > 0 ? " · " : ""}{d.totalMiles}mi · {d.tripCount}t
+                                </span>
                               )}
                               {isMaxed && <span style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
                               {isBkp && <span style={{ fontSize: 7, color: B.bkpL, fontWeight: 600 }}>BKP</span>}
@@ -1571,7 +1619,9 @@
                                   assigning={isAssigning}
                                   compact={true}
                                   stageColor={stageColor}
-                                  tooltip={`${blk.blockId}\nSeat: ${blk.truckLabel}\n${blk.trips.length} trips · ${blk.totalMiles} mi\n${blk.trips.map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`}
+                                  blockStart={blk.blockStart}
+                                  blockEnd={blk.blockEnd}
+                                  tooltip={`${blk.blockId}\nSeat: ${blk.truckLabel}\n${blk.trips.length} trips · ${blk.totalMiles} mi\n${blk.blockStart ? `Start: ${blk.blockStart}` : ""}\n${blk.blockEnd ? `End: ${blk.blockEnd}` : ""}\n${blk.trips.map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`}
                                   availableBackups={available.map((ad) => ({ ...ad, onSelect: () => assignBlockBackup(blk.truckId, bn, ad.id) }))}
                                   onCancel={() => toggleBlockCancel(blk.truckId, bn)}
                                   onAssign={() => setAssigningBlock(isAssigning ? null : key)}
@@ -1938,6 +1988,12 @@
                     <div style={{ textAlign: "center" }}>
                       <div style={{ fontSize: 18, fontWeight: 700, color: B.text }}>{selectedDriverInfo.tripCount || 0}</div>
                       <div style={{ fontSize: 9, color: B.dim }}>Trips</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.estWeeklyHours || 0) > 40 ? B.cancelRed : (selectedDriverInfo.estWeeklyHours || 0) > 25 ? B.gold : B.greenL }}>
+                        {selectedDriverInfo.estWeeklyHours || 0}
+                      </div>
+                      <div style={{ fontSize: 9, color: B.dim }}>{selectedDriverInfo.hosSource ? "Actual Hrs" : "Est Hrs/Wk"}</div>
                     </div>
                     {selectedDriverInfo.hosSource && (
                       <div style={{ textAlign: "center" }}>
