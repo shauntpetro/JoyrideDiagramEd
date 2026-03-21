@@ -292,7 +292,7 @@
         });
       });
 
-      // Sort each driver's blocks chronologically by start date
+      // Sort each driver's blocks chronologically and compute total scheduled hours
       const parseBlockDate = (s) => {
         if (!s) return Infinity;
         // Format: "MM/DD/YYYY HH:MM"
@@ -301,8 +301,19 @@
         const [m, d, y] = datePart.split("/");
         return new Date(`${y}-${m}-${d}T${timePart || "00:00"}`).getTime() || Infinity;
       };
-      Object.values(driverBlocksMap).forEach(blocks => {
+      const driverScheduledHours = {}; // driverId → total hours from block time spans
+      Object.entries(driverBlocksMap).forEach(([driverId, blocks]) => {
         blocks.sort((a, b) => parseBlockDate(a.blockStart) - parseBlockDate(b.blockStart));
+        // Sum hours from each block's start→end span
+        let totalHrs = 0;
+        blocks.forEach(blk => {
+          const startMs = parseBlockDate(blk.blockStart);
+          const endMs = parseBlockDate(blk.blockEnd);
+          if (startMs !== Infinity && endMs !== Infinity && endMs > startMs) {
+            totalHrs += (endMs - startMs) / 3600000; // ms → hours
+          }
+        });
+        driverScheduledHours[driverId] = Math.round(totalHrs * 10) / 10;
       });
 
       // Number drivers within each domicile
@@ -320,10 +331,12 @@
         if (!domicileNumbers[dom]) domicileNumbers[dom] = 1;
         const driverNum = domicileNumbers[dom]++;
         const dId = driverSet.get(name);
+        const schedHrs = driverScheduledHours[dId] || 0;
         return {
           id: dId, label: name,
           totalMiles: Math.round(s.totalMiles || 0),
-          estWeeklyHours: s.estWeeklyHours || 0,
+          estWeeklyHours: schedHrs > 0 ? schedHrs : (s.estWeeklyHours || 0), // prefer scheduled hours
+          scheduledHours: schedHrs,
           tripCount: s.tripCount || 0,
           blockCount: s.blockIds ? s.blockIds.size : 0,
           facilities: s.facilities ? [...s.facilities] : [],
@@ -1594,10 +1607,10 @@
                                 </span>
                               ) : (
                                 <span style={{ fontSize: 7, color: B.dim }}>
-                                  {d.estWeeklyHours > 0 ? (
-                                    <span style={{ color: d.estWeeklyHours > 40 ? B.cancelRed : d.estWeeklyHours > 25 ? B.gold : B.greenL }}>{d.estWeeklyHours}h</span>
-                                  ) : null}
-                                  {d.estWeeklyHours > 0 ? " · " : ""}{d.totalMiles}mi · {d.tripCount}t
+                                  <span style={{ color: d.estWeeklyHours > 40 ? B.cancelRed : d.estWeeklyHours > 25 ? B.gold : d.estWeeklyHours > 0 ? B.greenL : B.dim, fontWeight: 600 }}>
+                                    {d.estWeeklyHours}h
+                                  </span>
+                                  {d.totalMiles > 0 ? ` · ${d.totalMiles}mi` : ""} · {d.tripCount}t
                                 </span>
                               )}
                               {isMaxed && <span style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
