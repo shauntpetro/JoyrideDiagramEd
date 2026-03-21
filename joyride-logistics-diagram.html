@@ -11,9 +11,20 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body, #root { height: 100%; }
     body { background: #1c1f26; font-family: 'Montserrat', 'Inter', system-ui, sans-serif; }
-    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-track { background: #252830; }
     ::-webkit-scrollbar-thumb { background: #555862; border-radius: 3px; }
+    @keyframes blockPulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.03); }
+      100% { transform: scale(1); }
+    }
+    @keyframes fadeSlideIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .block-cancel { animation: blockPulse 0.3s ease; }
+    .panel-enter { animation: fadeSlideIn 0.25s ease; }
   </style>
 </head>
 <body>
@@ -179,12 +190,32 @@
         const secondary = driverArr[1] ? driverSet.get(driverArr[1]) : null;
         driverArr.forEach(name => { if (!allDriverNames.includes(name)) allDriverNames.push(name); });
 
+        // Build per-block trip details
+        const blockTrips = {};
+        data.trips.forEach(row => {
+          const bid = (row["Block ID"] || "").trim();
+          if (!bid) return;
+          if (!blockTrips[bid]) blockTrips[bid] = [];
+          blockTrips[bid].push({
+            tripId: (row["Trip ID"] || "").trim(),
+            stop1: (row["Stop 1"] || "").trim(),
+            stop2: (row["Stop 2"] || "").trim(),
+            distance: parseFloat(row["Estimate Distance"]) || 0,
+            plannedArr: (row["Stop 1 Planned Arrival"] || "").trim(),
+            plannedDep: (row["Stop 1 Planned Departure"] || "").trim(),
+            stop2Arr: (row["Stop 2 Planned Arrival"] || "").trim(),
+            stage: (row["Trip Stage"] || "").trim(),
+            driver: (row["Driver Name"] || "").trim(),
+          });
+        });
+
         trucks.push({
           id: loadId, label: opId, operatorId: opId,
           primaryDriver: primary, secondaryDriver: secondary || null,
           blockCount: Math.max(data.blocks.size, 1),
           tripData: data.trips, blockIds: [...data.blocks],
           facilities: [...data.facilities],
+          blockTrips, // { blockId → [{tripId, stop1, stop2, distance, ...}] }
         });
         loadId++;
       });
@@ -317,28 +348,38 @@
       </div>
     );
 
-    const BlockNode = ({ label, driverLabel, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, onRemoveBackup, dropped, onDrop, onUndrop }) => (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 105, position: "relative" }}>
+    const STAGE_COLORS = {
+      "In Transit": B.green,
+      "Tendered": B.gold,
+      "Upcoming": "#64b5f6",
+      "Not Started": B.subtle,
+      "History": B.dim,
+    };
+
+    const BlockNode = ({ label, driverLabel, driverName, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, backupName, onRemoveBackup, dropped, onDrop, onUndrop, compact, tooltip, stageColor }) => (
+      <div className={cancelled ? "block-cancel" : ""} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: compact ? 100 : 120, position: "relative" }} title={tooltip || ""}>
         <div
           onClick={(e) => { e.stopPropagation(); (dropped ? onUndrop : onCancel)(); }}
           style={{
             width: "100%",
             background: dropped ? "rgba(100,100,100,0.12)" : cancelled ? B.cancelBg : B.surface,
             border: dropped ? `2px solid ${B.dim}` : cancelled ? `2px solid ${B.cancelRed}` : `1px solid ${B.bdrL}`,
-            borderRadius: 10, padding: "16px 12px", textAlign: "center", cursor: "pointer",
+            borderTop: !dropped && !cancelled && stageColor ? `3px solid ${stageColor}` : undefined,
+            borderRadius: 10, padding: compact ? "10px 6px" : "14px 8px", textAlign: "center", cursor: "pointer",
             transition: "all 0.2s ease", opacity: dropped ? 0.4 : 1,
           }}
         >
-          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.5, color: dropped ? B.dim : cancelled ? B.cancelRed : B.text, textDecoration: dropped ? "line-through" : "none" }}>
+          <div style={{ fontSize: compact ? 9 : 11, fontWeight: 700, letterSpacing: 0.3, color: dropped ? B.dim : cancelled ? B.cancelRed : B.text, textDecoration: dropped ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {label}
           </div>
           <div style={{
-            fontSize: 11, marginTop: 4, fontWeight: 600,
+            fontSize: compact ? 9 : 10, marginTop: 2, fontWeight: 600,
             color: dropped ? B.dim : cancelled ? B.cancelRed : backupAssigned ? B.bkpL : B.muted,
             textDecoration: (cancelled && !backupAssigned) || dropped ? "line-through" : "none",
+            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
           }}>
-            {dropped ? "N/A" : backupAssigned ? `D${backupAssigned}` : driverLabel}
-            {backupAssigned && <span style={{ fontSize: 8, color: B.bkpL, marginLeft: 3 }}>(BKP)</span>}
+            {dropped ? "N/A" : backupAssigned ? (backupName || `D${backupAssigned}`) : (driverName || driverLabel)}
+            {backupAssigned && <span style={{ fontSize: 7, color: B.bkpL, marginLeft: 2 }}>(BKP)</span>}
           </div>
         </div>
         {dropped && (
@@ -374,7 +415,7 @@
         )}
         {backupAssigned && (
           <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ fontSize: 9, color: B.bkpL, fontWeight: 600 }}>Backup</span>
+            <span style={{ fontSize: 8, color: B.bkpL, fontWeight: 600 }}>Backup Assigned</span>
             <button
               onClick={(e) => { e.stopPropagation(); onRemoveBackup(); }}
               style={{ background: "rgba(239,83,80,0.15)", color: "#ef9a9a", border: "1px solid rgba(239,83,80,0.3)", borderRadius: 4, padding: "1px 5px", fontSize: 8, cursor: "pointer", lineHeight: "14px" }}
@@ -395,42 +436,52 @@
             <div style={{ fontSize: 10, fontWeight: 700, color: B.bkpL, marginBottom: 5, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>
               Select Backup
             </div>
-            {availableBackups.length > 0 && availableBackups[0].hoursScore > 0 && (
+            {availableBackups.length > 0 && (availableBackups[0].blocksRemaining !== undefined || availableBackups[0].hoursScore > 0) && (
               <div style={{ fontSize: 8, color: B.dim, textAlign: "center", marginBottom: 4, fontStyle: "italic" }}>
-                Ranked by proximity & weekly hours
+                Ranked by proximity & availability (3 blks/wk max)
               </div>
             )}
             {availableBackups.length === 0 ? (
               <div style={{ fontSize: 11, color: B.dim, textAlign: "center", padding: 6 }}>No available drivers</div>
             ) : (
-              <div style={{ maxHeight: 220, overflowY: "auto" }}>
-                {availableBackups.map((d, idx) => (
+              <div style={{ maxHeight: 240, overflowY: "auto" }}>
+                {availableBackups.map((d, idx) => {
+                  const isTopPick = idx === 0 && (d.proximityScore > 0 || d.blocksRemaining >= 2);
+                  return (
                   <div
                     key={d.id}
                     onClick={d.onSelect}
                     style={{
-                      display: "flex", alignItems: "center", gap: 6, padding: "5px 8px", borderRadius: 6,
-                      cursor: "pointer", fontSize: 11, fontWeight: 600, transition: "background 0.15s",
-                      background: "transparent", marginBottom: 2, color: B.text,
-                      borderLeft: idx === 0 && d.proximityScore > 0 ? `2px solid ${B.green}` : "2px solid transparent",
+                      display: "flex", alignItems: "center", gap: 6, padding: "6px 8px", borderRadius: 6,
+                      cursor: "pointer", fontSize: 11, fontWeight: 600, transition: "all 0.15s",
+                      background: isTopPick ? "rgba(102,187,106,0.06)" : "transparent", marginBottom: 2, color: B.text,
+                      borderLeft: isTopPick ? `3px solid ${B.green}` : "3px solid transparent",
                     }}
                     onMouseEnter={(e) => (e.currentTarget.style.background = B.bkpBg)}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = isTopPick ? "rgba(102,187,106,0.06)" : "transparent")}
                   >
-                    <PersonSVG size={14} color={idx === 0 && d.proximityScore > 0 ? B.green : B.bkp} />
+                    <PersonSVG size={14} color={isTopPick ? B.green : B.bkp} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</div>
-                      {(d.hoursScore > 0 || d.proximityScore > 0) && (
-                        <div style={{ fontSize: 8, color: B.dim, display: "flex", gap: 6, marginTop: 1 }}>
-                          {d.hoursScore > 0 && <span>{d.hoursScore}h/wk</span>}
-                          {d.totalMiles > 0 && <span>{d.totalMiles}mi</span>}
-                          {d.proximityScore > 0 && <span style={{ color: B.greenL }}>{d.proximityScore} shared stops</span>}
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                        {isTopPick && <span style={{ fontSize: 7, color: B.green, fontWeight: 700, background: B.greenBg, padding: "1px 4px", borderRadius: 3, flexShrink: 0 }}>★ TOP</span>}
+                      </div>
+                      {(d.blocksRemaining !== undefined || d.proximityScore > 0) && (
+                        <div style={{ display: "flex", gap: 4, marginTop: 2, alignItems: "center" }}>
+                          <div style={{ width: 30, height: 3, borderRadius: 2, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                            <div style={{ height: "100%", borderRadius: 2, width: `${((3 - d.blocksUsed) / 3) * 100}%`, background: d.blocksRemaining >= 2 ? B.green : d.blocksRemaining === 1 ? B.gold : B.cancelRed }} />
+                          </div>
+                          <span style={{ fontSize: 7, color: d.blocksRemaining >= 2 ? B.greenL : d.blocksRemaining === 1 ? B.gold : B.cancelRed, fontWeight: 600 }}>
+                            {d.blocksUsed}/3
+                          </span>
+                          {d.proximityScore > 0 && <span style={{ fontSize: 7, color: B.greenL }}>· {d.proximityScore} shared</span>}
+                          {d.totalMiles > 0 && <span style={{ fontSize: 7, color: B.dim }}>{d.totalMiles}mi</span>}
                         </div>
                       )}
                     </div>
-                    <span style={{ fontSize: 9, color: B.dim, flexShrink: 0 }}>(L{d.homeTruck})</span>
+                    <span style={{ fontSize: 8, color: B.dim, flexShrink: 0 }}>{d.homeTruckLabel || (d.homeTruck ? `L${d.homeTruck}` : "")}</span>
                   </div>
-                ))}
+                );})}
               </div>
             )}
             <button
@@ -460,6 +511,10 @@
       const [hoveredDriver, setHoveredDriver] = useState(null);
       const [hoveredTruck, setHoveredTruck] = useState(null);
       const [selectedTruck, setSelectedTruck] = useState(null);
+      const [driverSearch, setDriverSearch] = useState("");
+      const [selectedDriver, setSelectedDriver] = useState(null);
+      const [driverSort, setDriverSort] = useState("default"); // "default", "available", "name", "miles"
+      const [showLines, setShowLines] = useState(true);
 
       // CSV state
       const [csvRows, setCsvRows] = useState(null);
@@ -507,6 +562,7 @@
         setCascadeCancelled({});
         setAssigningBlock(null);
         setSelectedTruck(null);
+        setSelectedDriver(null);
       };
 
       // Build data from CSV or fallback to demo MODELS
@@ -547,20 +603,17 @@
 
       const blockKey = (truckId, blockNum) => `${truckId}-${blockNum}`;
 
+      // Resolve driver ID to name
+      const getDriverName = (driverId) => {
+        if (!driverId) return "—";
+        const d = DRIVERS.find(d => d.id === driverId);
+        return d ? d.label : `D${driverId}`;
+      };
+
       const getOriginalDriver = (truckId, blockNum) => {
         const truck = TRUCKS.find((t) => t.id === truckId);
         if (!hasPrimarySecondary) return truck.primaryDriver;
         return blockNum % 2 === 1 ? truck.primaryDriver : truck.secondaryDriver;
-      };
-
-      const isDriverCalledOff = (driverId) => {
-        for (const [key, cancelled] of Object.entries(cancelledBlocks)) {
-          if (!cancelled) continue;
-          if (cascadeCancelled[key]) continue; // Skip cascade-cancelled blocks
-          const [tid, bnum] = key.split("-").map(Number);
-          if (getOriginalDriver(tid, bnum) === driverId && !blockBackups[key]) return true;
-        }
-        return false;
       };
 
       const isDriverBackup = (driverId) => Object.values(blockBackups).includes(driverId);
@@ -576,6 +629,8 @@
         return blocks;
       };
 
+      const MAX_BLOCKS_PER_WEEK = 3;
+
       const getAvailableForBlock = (truckId, blockNum) => {
         const usedAsBackup = new Set(Object.values(blockBackups));
         const truck = TRUCKS.find((t) => t.id === truckId);
@@ -583,6 +638,8 @@
         const available = DRIVERS.filter((d) => {
           if (usedAsBackup.has(d.id)) return false;
           if (d.id === truck.primaryDriver || d.id === truck.secondaryDriver) return false;
+          // In CSV mode, filter out drivers already at max blocks
+          if (csvRows && d.blockCount >= MAX_BLOCKS_PER_WEEK) return false;
           for (const bk of Object.keys(cancelledBlocks)) {
             if (!cancelledBlocks[bk]) continue;
             if (cascadeCancelled[bk]) continue;
@@ -596,15 +653,17 @@
           const driverFacs = d.facilities || [];
           const sharedFacilities = driverFacs.filter(f => loadFacilities.includes(f));
           const proximityScore = sharedFacilities.length;
-          // Hours score: fewer weekly hours = more available
-          const hoursScore = d.estWeeklyHours || 0;
-          return { ...d, homeTruck: homeTruck?.id, proximityScore, sharedFacilities, hoursScore };
+          // Block capacity: fewer blocks = more available (out of 3 max)
+          const blocksUsed = d.blockCount || 0;
+          const blocksRemaining = MAX_BLOCKS_PER_WEEK - blocksUsed;
+          const homeTruckLabel = homeTruck?.operatorId ? homeTruck.operatorId.split("_").slice(-1)[0] : (homeTruck ? `L${homeTruck.id}` : "");
+          return { ...d, homeTruck: homeTruck?.id, homeTruckLabel, proximityScore, sharedFacilities, hoursScore: d.estWeeklyHours || 0, blocksUsed, blocksRemaining };
         });
 
-        // Sort: highest proximity first, then lowest hours first
+        // Sort: highest proximity first, then most blocks remaining first (fewest used)
         available.sort((a, b) => {
           if (b.proximityScore !== a.proximityScore) return b.proximityScore - a.proximityScore;
-          return a.hoursScore - b.hoursScore;
+          return a.blocksUsed - b.blocksUsed;
         });
 
         return available;
@@ -700,6 +759,48 @@
         return () => clearTimeout(t);
       }, [cancelledBlocks, blockBackups, assigningBlock, measurePositions]);
 
+      // Keyboard shortcuts
+      useEffect(() => {
+        const handleKey = (e) => {
+          if (e.key === "Escape") {
+            setSelectedDriver(null);
+            setSelectedTruck(null);
+            setAssigningBlock(null);
+            setHoveredDriver(null);
+            setHoveredTruck(null);
+          }
+          // Arrow keys to cycle through drivers when one is selected
+          if (selectedDriver && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+            e.preventDefault();
+            const filteredDrivers = DRIVERS.filter(d => !driverSearch || d.label.toLowerCase().includes(driverSearch.toLowerCase()));
+            const currentIdx = filteredDrivers.findIndex(d => d.id === selectedDriver);
+            if (currentIdx === -1) return;
+            const nextIdx = e.key === "ArrowDown"
+              ? Math.min(currentIdx + 1, filteredDrivers.length - 1)
+              : Math.max(currentIdx - 1, 0);
+            const nextDriver = filteredDrivers[nextIdx];
+            setSelectedDriver(nextDriver.id);
+            setSelectedTruck(null);
+            // Scroll to the driver's load
+            const load = TRUCKS.find(t => t.primaryDriver === nextDriver.id || t.secondaryDriver === nextDriver.id);
+            if (load) {
+              const loadEl = blockGroupRefs.current[load.id];
+              if (loadEl) loadEl.scrollIntoView({ behavior: "smooth", block: "center" });
+            }
+            // Scroll driver card into view
+            const driverEl = driverRefs.current[nextDriver.id];
+            if (driverEl) driverEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          }
+        };
+        window.addEventListener("keydown", handleKey);
+        return () => window.removeEventListener("keydown", handleKey);
+      }, [selectedDriver, driverSearch]);
+
+      // Auto-hide lines in CSV mode when sorted or many drivers
+      const effectiveShowLines = csvRows
+        ? (driverSort === "default" && showLines && DRIVERS.length <= 40) || hoveredDriver || hoveredTruck || selectedDriver
+        : true;
+
       const getLineColor = (driverId, truckId) => {
         if (Object.entries(blockBackups).some(([k, v]) => v === driverId && k.startsWith(`${truckId}-`))) return B.bkp;
         const truck = TRUCKS.find((t) => t.id === truckId);
@@ -733,6 +834,26 @@
         }
       }
 
+      // Determine which loads a selected driver belongs to
+      const driverLoadMap = {};
+      if (selectedDriver) {
+        TRUCKS.forEach((truck) => {
+          if (truck.primaryDriver === selectedDriver || truck.secondaryDriver === selectedDriver) {
+            driverLoadMap[truck.id] = true;
+          }
+          // Also check backup assignments
+          for (const [key, bid] of Object.entries(blockBackups)) {
+            if (bid === selectedDriver) {
+              const [tid] = key.split("-").map(Number);
+              driverLoadMap[tid] = true;
+            }
+          }
+        });
+      }
+
+      // Get selected driver's info
+      const selectedDriverInfo = selectedDriver ? DRIVERS.find(d => d.id === selectedDriver) : null;
+
       const cancelCount = Object.keys(cancelledBlocks).length;
       const backupCount = Object.keys(blockBackups).length;
       const droppedCount = Object.keys(droppedBlocks).length;
@@ -761,12 +882,44 @@
                 <RegionTabs regions={csvRegions} active={csvRegion} onSelect={handleRegionChange} />
               )}
               <CSVUpload onUpload={handleCSVUpload} onClear={handleCSVClear} hasData={!!csvRows} />
-              {csvStats && (
-                <div style={{ fontSize: 10, color: B.greenL, fontWeight: 600 }}>
-                  {csvStats.drivers} drivers · {csvStats.loads} seats · {csvStats.trips} trips
-                </div>
-              )}
-              {cancelCount > 0 && (
+              {csvStats && (() => {
+                const avail = DRIVERS.filter(d => d.blockCount < MAX_BLOCKS_PER_WEEK).length;
+                const maxed = DRIVERS.filter(d => d.blockCount >= MAX_BLOCKS_PER_WEEK).length;
+                const totalDrivers = avail + maxed;
+                const pct = totalDrivers > 0 ? Math.round((maxed / totalDrivers) * 100) : 0;
+                // Block-level stats
+                const totalBlocks = TRUCKS.reduce((s, t) => s + (t.blockIds?.length || 0), 0);
+                const atRisk = TRUCKS.reduce((s, t) => {
+                  // Count blocks assigned to maxed-out drivers
+                  return s + (t.blockIds || []).filter((_, bi) => {
+                    const origD = getOriginalDriver(t.id, bi + 1);
+                    const dInfo = DRIVERS.find(d => d.id === origD);
+                    return dInfo && dInfo.blockCount >= MAX_BLOCKS_PER_WEEK;
+                  }).length;
+                }, 0);
+                return (
+                  <div style={{ display: "flex", gap: 8, fontSize: 10, fontWeight: 600, alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ width: 60, height: 6, borderRadius: 3, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
+                        <div style={{ height: "100%", borderRadius: 3, width: `${pct}%`, background: pct > 80 ? B.cancelRed : pct > 50 ? B.gold : B.green, transition: "width 0.3s" }} />
+                      </div>
+                      <span style={{ color: B.greenL }}>{avail}</span>
+                      <span style={{ color: B.dim }}>/</span>
+                      <span style={{ color: B.cancelRed }}>{maxed} full</span>
+                    </div>
+                    <span style={{ color: B.dim }}>·</span>
+                    <span style={{ color: B.muted }}>{TRUCKS.length} seats</span>
+                    {cancelCount > 0 && (
+                      <>
+                        <span style={{ color: B.dim }}>·</span>
+                        <span style={{ color: B.cancelRed }}>{cancelCount} cancelled</span>
+                        {backupCount > 0 && <span style={{ color: B.bkpL }}>{backupCount} covered</span>}
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+              {cancelCount > 0 && !csvRows && (
                 <div style={{ fontSize: 12, color: "#ef9a9a", fontWeight: 500 }}>
                   {cancelCount} block{cancelCount > 1 ? "s" : ""} called off
                   {backupCount > 0 && ` · ${backupCount} backup${backupCount > 1 ? "s" : ""}`}
@@ -789,39 +942,65 @@
           </div>
 
           <div style={{
-            display: "flex", gap: 20, padding: "10px 28px",
+            display: "flex", gap: 14, padding: "6px 28px",
             background: B.card, borderBottom: `1px solid ${B.bdr}`,
-            fontSize: 12, flexWrap: "wrap", alignItems: "center",
+            fontSize: 11, flexWrap: "wrap", alignItems: "center",
           }}>
-            <span style={{ fontWeight: 700, color: B.redLight, textTransform: "uppercase", letterSpacing: 1, fontSize: 11 }}>Legend</span>
             {[
-              { color: B.green, label: hasPrimarySecondary ? "Primary Driver" : "Assigned Driver", type: "line" },
-              ...(hasPrimarySecondary ? [{ color: B.gold, label: "Secondary Driver", type: "line" }] : []),
-              { color: B.bkp, label: "Backup Assigned", type: "line" },
-              { color: B.cancelRed, label: "Cancelled Block", type: "dot" },
+              { color: B.green, label: hasPrimarySecondary ? "Primary" : "Assigned", type: "line" },
+              ...(hasPrimarySecondary ? [{ color: B.gold, label: "Secondary", type: "line" }] : []),
+              { color: B.bkp, label: "Backup", type: "line" },
+              { color: B.cancelRed, label: "Cancelled", type: "dot" },
             ].map((item) => (
-              <span key={item.label} style={{ display: "flex", alignItems: "center", gap: 6, color: B.muted }}>
+              <span key={item.label} style={{ display: "flex", alignItems: "center", gap: 4, color: B.muted, fontSize: 10 }}>
                 <span style={{
-                  width: item.type === "dot" ? 10 : 20, height: item.type === "dot" ? 10 : 2.5,
+                  width: item.type === "dot" ? 8 : 16, height: item.type === "dot" ? 8 : 2,
                   background: item.color, display: "inline-block",
                   borderRadius: item.type === "dot" ? 2 : 1,
                 }} />
                 {item.label}
               </span>
             ))}
-            <span style={{ color: B.dim, marginLeft: "auto", fontStyle: "italic", fontSize: 11 }}>
-              {hasPrimarySecondary
-                ? "Click a block to cancel · Assign backup from dropdown"
-                : "1 driver per load · 3 blocks per load · Click a block to cancel"
-              }
+            {csvRows && (
+              <span style={{ display: "flex", gap: 6, alignItems: "center", marginLeft: 6, borderLeft: `1px solid ${B.bdr}`, paddingLeft: 8 }}>
+                <span style={{ fontSize: 8, color: B.dim, fontWeight: 600 }}>STAGE:</span>
+                {[
+                  { color: "#64b5f6", label: "Upcoming" },
+                  { color: B.gold, label: "Tendered" },
+                  { color: B.green, label: "In Transit" },
+                ].map(s => (
+                  <span key={s.label} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 9, color: B.muted }}>
+                    <span style={{ width: 10, height: 3, background: s.color, borderRadius: 1 }} />
+                    {s.label}
+                  </span>
+                ))}
+              </span>
+            )}
+            {csvRows && (
+              <button onClick={() => setShowLines(!showLines)} style={{
+                padding: "2px 8px", borderRadius: 3, fontSize: 8, fontWeight: 600,
+                cursor: "pointer", fontFamily: "'Montserrat', sans-serif", border: "none",
+                background: showLines ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.03)",
+                color: showLines ? B.muted : B.dim, transition: "all 0.15s",
+              }}>Lines {showLines ? "ON" : "OFF"}</button>
+            )}
+            <span style={{ color: B.dim, marginLeft: "auto", fontSize: 9 }}>
+              Click block to cancel · Click driver to filter · ↑↓ navigate · Esc deselect · Max {MAX_BLOCKS_PER_WEEK} blks/wk
             </span>
           </div>
 
           <div key={`${mode}-${csvRegion}`} ref={containerRef} style={{ position: "relative", display: "flex", padding: "24px 20px", gap: 0, background: B.bg }}>
 
-            {positions && (
+            {positions && effectiveShowLines && (
               <svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1 }}>
-                {connections.map(({ driverId, truckId, type }) => {
+                {connections.filter(({ driverId, truckId, type }) => {
+                  // In CSV mode with selected/hovered driver, only show their lines
+                  if (csvRows && (selectedDriver || hoveredDriver)) {
+                    const relevantDriver = selectedDriver || hoveredDriver;
+                    return driverId === relevantDriver || type === "backup";
+                  }
+                  return true;
+                }).map(({ driverId, truckId, type }) => {
                   const dp = positions.drivers[driverId];
                   const bp = positions.blocks[truckId];
                   if (!dp || !bp) return null;
@@ -853,83 +1032,177 @@
               </svg>
             )}
 
-            <div style={{ flex: csvRows ? "0 0 200px" : "0 0 150px", display: "flex", flexDirection: "column", zIndex: 2, paddingRight: 8 }}>
+            <div style={{ flex: csvRows ? "0 0 220px" : "0 0 150px", display: "flex", flexDirection: "column", zIndex: 2, paddingRight: 8 }}>
               <div style={{
-                fontSize: 12, fontWeight: 700, color: B.redLight, textAlign: "center",
-                textTransform: "uppercase", letterSpacing: 1.5, height: HEADER_H,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                borderBottom: `1px solid ${B.bdr}`, boxSizing: "border-box",
+                height: csvRows ? HEADER_H + 20 : HEADER_H, display: "flex", flexDirection: "column", justifyContent: "center", gap: 4,
+                borderBottom: `1px solid ${B.bdr}`, boxSizing: "border-box", padding: "2px 4px",
+                position: "sticky", top: 0, background: B.bg, zIndex: 5,
               }}>
-                {DRIVERS.length} Drivers
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: B.redLight, textTransform: "uppercase", letterSpacing: 1, flexShrink: 0 }}>
+                    {DRIVERS.length}
+                  </span>
+                  {csvRows ? (
+                    <input
+                      type="text" placeholder="Search drivers..." value={driverSearch}
+                      onChange={(e) => setDriverSearch(e.target.value)}
+                      style={{
+                        flex: 1, background: "rgba(255,255,255,0.05)", border: `1px solid ${B.bdr}`,
+                        borderRadius: 4, padding: "3px 8px", fontSize: 10, color: B.text,
+                        outline: "none", fontFamily: "'Montserrat', sans-serif",
+                      }}
+                      onFocus={(e) => (e.target.style.borderColor = B.red)}
+                      onBlur={(e) => (e.target.style.borderColor = B.bdr)}
+                    />
+                  ) : (
+                    <span style={{ fontSize: 11, fontWeight: 700, color: B.redLight, textTransform: "uppercase", letterSpacing: 1 }}>Drivers</span>
+                  )}
+                </div>
+                {csvRows && (
+                  <div style={{ display: "flex", gap: 2 }}>
+                    {[
+                      { key: "default", label: "Default" },
+                      { key: "available", label: "Avail ↑" },
+                      { key: "name", label: "A-Z" },
+                      { key: "miles", label: "Miles ↓" },
+                    ].map(s => (
+                      <button key={s.key} onClick={() => setDriverSort(s.key)} style={{
+                        padding: "1px 6px", borderRadius: 3, fontSize: 8, fontWeight: 600,
+                        cursor: "pointer", fontFamily: "'Montserrat', sans-serif", border: "none",
+                        background: driverSort === s.key ? "rgba(193,59,64,0.2)" : "rgba(255,255,255,0.04)",
+                        color: driverSort === s.key ? B.redLight : B.dim,
+                        transition: "all 0.15s",
+                      }}>{s.label}</button>
+                    ))}
+                  </div>
+                )}
               </div>
-              {DRIVERS.map((d) => {
+              {DRIVERS.filter(d => !driverSearch || d.label.toLowerCase().includes(driverSearch.toLowerCase()))
+                .sort((a, b) => {
+                  if (driverSort === "available") return (a.blockCount || 0) - (b.blockCount || 0);
+                  if (driverSort === "name") return a.label.localeCompare(b.label);
+                  if (driverSort === "miles") return (b.totalMiles || 0) - (a.totalMiles || 0);
+                  return 0;
+                })
+                .map((d) => {
                 const load = TRUCKS.find((t) => t.primaryDriver === d.id || t.secondaryDriver === d.id);
                 const isPrimary = load?.primaryDriver === d.id;
                 const isBkp = isDriverBackup(d.id);
                 const isHov = hoveredDriver === d.id;
                 const bkpBlocks = getDriverBackupBlocks(d.id);
+                const isMaxed = csvRows && d.blockCount >= MAX_BLOCKS_PER_WEEK;
+                const isSel = selectedDriver === d.id;
                 return (
                   <div key={d.id} ref={(el) => (driverRefs.current[d.id] = el)}
+                    title={csvRows ? `${d.label}\n${d.blockCount}/3 blocks · ${d.totalMiles}mi · ${d.tripCount} trips\n${d.estWeeklyHours || 0}h est/wk\nFacilities: ${(d.facilities || []).slice(0, 6).join(", ")}${(d.facilities || []).length > 6 ? ` +${d.facilities.length - 6} more` : ""}` : ""}
                     onMouseEnter={() => setHoveredDriver(d.id)} onMouseLeave={() => setHoveredDriver(null)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const newSel = isSel ? null : d.id;
+                      setSelectedDriver(newSel);
+                      setSelectedTruck(null);
+                      // Auto-scroll to the driver's load
+                      if (newSel && load) {
+                        const loadEl = blockGroupRefs.current[load.id];
+                        if (loadEl) loadEl.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }
+                    }}
                     style={{
                       ...ROW, display: "flex", alignItems: "center", gap: 6, padding: "0 10px",
-                      height: DRIVER_H, borderRadius: 8,
-                      background: isBkp ? B.bkpBg : isHov ? B.redSub : "transparent",
-                      border: isBkp ? `1.5px solid rgba(186,104,200,0.3)` : isHov ? `1.5px solid rgba(193,59,64,0.3)` : `1.5px solid transparent`,
+                      height: DRIVER_H, borderRadius: 8, cursor: "pointer",
+                      opacity: isMaxed && !isSel && !isBkp ? 0.5 : 1,
+                      background: isSel ? "rgba(193,59,64,0.15)" : isBkp ? B.bkpBg : isHov ? B.redSub : "transparent",
+                      border: isSel ? `2px solid ${B.red}` : isBkp ? `1.5px solid rgba(186,104,200,0.3)` : isHov ? `1.5px solid rgba(193,59,64,0.3)` : `1.5px solid transparent`,
                       transition: "all 0.2s ease",
                     }}
                   >
-                    <PersonSVG size={16} color={isBkp ? B.bkp : isHov ? B.red : isPrimary ? B.green : B.gold} />
+                    <PersonSVG size={16} color={isMaxed ? B.dim : isBkp ? B.bkp : isHov ? B.red : isPrimary ? B.green : B.gold} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: csvRows ? 11 : 12, fontWeight: 600, color: B.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      <div style={{
+                        fontSize: csvRows ? 11 : 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        color: isMaxed ? B.dim : B.text,
+                      }}>
                         {d.label}
                       </div>
-                      {csvRows && d.estWeeklyHours > 0 && (
-                        <div style={{ fontSize: 8, color: B.dim, display: "flex", gap: 4 }}>
-                          <span>{d.estWeeklyHours}h/wk</span>
-                          <span>·</span>
-                          <span>{d.totalMiles}mi</span>
-                          <span>·</span>
-                          <span>{d.tripCount} trips</span>
+                      {csvRows && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: 2 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <div style={{ flex: 1, height: 3, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                              <div style={{
+                                height: "100%", borderRadius: 2, transition: "width 0.3s",
+                                width: `${Math.min((d.blockCount / 3) * 100, 100)}%`,
+                                background: d.blockCount >= 3 ? B.cancelRed : d.blockCount >= 2 ? B.gold : B.green,
+                              }} />
+                            </div>
+                            <span style={{ fontSize: 8, color: d.blockCount >= 3 ? B.cancelRed : B.dim, flexShrink: 0, fontWeight: d.blockCount >= 3 ? 700 : 400 }}>
+                              {d.blockCount}/3
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 7, color: B.dim, display: "flex", gap: 3 }}>
+                            <span>{d.totalMiles}mi</span>
+                            <span>·</span>
+                            <span>{d.tripCount}t</span>
+                            {isMaxed && (
+                              <>
+                                <span>·</span>
+                                <span style={{ color: B.cancelRed, fontWeight: 600 }}>FULL</span>
+                              </>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
+                    {csvRows && load && (
+                      <span style={{
+                        fontSize: 7, color: B.dim, fontWeight: 600, padding: "1px 4px",
+                        background: "rgba(255,255,255,0.04)", borderRadius: 3, flexShrink: 0,
+                      }}>
+                        {load.operatorId ? load.operatorId.split("_").slice(-1)[0] : `L${load.id}`}
+                      </span>
+                    )}
                     {isBkp && <span style={{ fontSize: 8, color: B.bkpL, fontWeight: 700 }}>BKP</span>}
                     {bkpBlocks.length > 0 && (
-                      <span style={{ fontSize: 8, color: B.bkpL }}>L{bkpBlocks[0].truckId}B{bkpBlocks[0].blockNum}</span>
+                      <span style={{ fontSize: 7, color: B.bkpL }}>→L{bkpBlocks[0].truckId}</span>
                     )}
-                    <span style={{
-                      width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
-                      background: isBkp ? B.bkp : isPrimary ? B.green : B.gold,
-                    }} />
                   </div>
                 );
               })}
             </div>
 
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", zIndex: 4, paddingLeft: 30 }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", zIndex: 4, paddingLeft: 30, minWidth: 0, overflowX: "auto" }}>
               <div style={{
                 fontSize: 12, fontWeight: 700, color: B.redLight, textAlign: "center",
-                textTransform: "uppercase", letterSpacing: 1.5, height: HEADER_H,
+                textTransform: "uppercase", letterSpacing: 1.5, height: csvRows ? HEADER_H + 20 : HEADER_H,
                 display: "flex", alignItems: "center", justifyContent: "center",
                 borderBottom: `1px solid ${B.bdr}`, boxSizing: "border-box",
+                position: "sticky", top: 0, background: B.bg, zIndex: 5,
               }}>
                 {csvRows
                   ? `${TRUCKS.length} Seats${csvRegion !== "ALL" ? ` (${csvRegion})` : ""} · Up to ${blocksPerLoad} Blocks`
                   : `${TRUCKS.length} Loads · ${blocksPerLoad} Blocks Each`
                 }
               </div>
-              {TRUCKS.map((load) => {
+              {TRUCKS.map((load, loadIdx) => {
                 const isHl = hoveredTruck === load.id || selectedTruck === load.id;
+                const isDriverLoad = !selectedDriver || driverLoadMap[load.id];
                 return (
                   <div key={load.id} ref={(el) => (blockGroupRefs.current[load.id] = el)}
-                    onClick={() => setSelectedTruck(selectedTruck === load.id ? null : load.id)}
-                    style={{ ...ROW, display: "flex", gap: 18, alignItems: "center", height: SLOT_H, cursor: "pointer" }}
+                    onClick={() => { setSelectedTruck(selectedTruck === load.id ? null : load.id); if (selectedDriver) setSelectedDriver(null); }}
+                    style={{
+                      ...ROW, display: "flex", gap: csvRows ? 6 : 14, alignItems: "center", height: SLOT_H, cursor: "pointer",
+                      opacity: isDriverLoad ? 1 : 0.15,
+                      transition: "all 0.2s ease",
+                      background: selectedDriver && isDriverLoad ? "rgba(193,59,64,0.06)" : isHl ? "rgba(193,59,64,0.04)" : loadIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.015)",
+                      borderLeft: selectedDriver && isDriverLoad ? `3px solid ${B.red}` : isHl ? `3px solid ${B.red}` : "3px solid transparent",
+                      borderRadius: 4, paddingLeft: 2, minWidth: "fit-content",
+                    }}
                     onMouseEnter={() => setHoveredTruck(load.id)} onMouseLeave={() => setHoveredTruck(null)}
                   >
                     <div style={{
-                      fontSize: csvRows ? 8 : 10, fontWeight: 700, color: isHl ? B.redLight : B.muted,
-                      width: csvRows ? 48 : 28, textAlign: "center", flexShrink: 0, lineHeight: 1.2,
+                      fontSize: csvRows ? 9 : 10, fontWeight: 700, color: isHl ? B.redLight : B.muted,
+                      width: csvRows ? 44 : 28, textAlign: "center", flexShrink: 0, lineHeight: 1.3,
+                      background: isHl ? "rgba(193,59,64,0.08)" : "transparent",
+                      borderRadius: 4, padding: "2px 0",
                     }}>
                       {load.operatorId ? load.operatorId.split("_").slice(-1)[0] : `L${load.id}`}
                     </div>
@@ -940,35 +1213,58 @@
                       const backup = blockBackups[key];
                       const isAssigning = assigningBlock === key;
                       const available = isAssigning ? getAvailableForBlock(load.id, bn) : [];
+                      // Check if this block belongs to selected driver
+                      const isDriverBlock = !selectedDriver || origDriver === selectedDriver || backup === selectedDriver;
+                      // Get CSV block label and trip stage if available
+                      const csvBlockId = csvRows && load.blockIds && load.blockIds[bn - 1];
+                      const blockTripData = csvBlockId && load.blockTrips?.[csvBlockId];
+                      const dominantStage = blockTripData && blockTripData.length > 0
+                        ? blockTripData.reduce((acc, t) => { acc[t.stage] = (acc[t.stage] || 0) + 1; return acc; }, {})
+                        : null;
+                      const stageKey = dominantStage ? Object.entries(dominantStage).sort((a,b) => b[1] - a[1])[0]?.[0] : null;
                       return (
-                        <BlockNode
-                          key={bn}
-                          label={`B${bn}`}
-                          driverLabel={origDriver ? `D${origDriver}` : "—"}
-                          highlight={isHl}
-                          cancelled={isCancelled}
-                          dropped={!!droppedBlocks[key]}
-                          backupAssigned={backup}
-                          assigning={isAssigning}
-                          availableBackups={available.map((d) => ({ ...d, onSelect: () => assignBlockBackup(load.id, bn, d.id) }))}
-                          onCancel={() => toggleBlockCancel(load.id, bn)}
-                          onAssign={() => setAssigningBlock(isAssigning ? null : key)}
-                          onRemoveBackup={() => removeBlockBackup(load.id, bn)}
-                          onDrop={() => dropBlock(load.id, bn)}
-                          onUndrop={() => undropBlock(load.id, bn)}
-                        />
+                        <div key={bn} style={{ opacity: isDriverLoad && !isDriverBlock && selectedDriver ? 0.25 : 1, transition: "opacity 0.2s" }}>
+                          <BlockNode
+                            label={csvBlockId ? csvBlockId.slice(0, 8) : `B${bn}`}
+                            driverLabel={origDriver ? `D${origDriver}` : "—"}
+                            driverName={getDriverName(origDriver)}
+                            highlight={isHl}
+                            cancelled={isCancelled}
+                            dropped={!!droppedBlocks[key]}
+                            backupAssigned={backup}
+                            backupName={backup ? getDriverName(backup) : null}
+                            assigning={isAssigning}
+                            compact={!!csvRows}
+                            stageColor={stageKey ? STAGE_COLORS[stageKey] : null}
+                            tooltip={csvBlockId && load.blockTrips?.[csvBlockId]
+                              ? `${csvBlockId}\n${load.blockTrips[csvBlockId].length} trips · ${Math.round(load.blockTrips[csvBlockId].reduce((s,t) => s + t.distance, 0))} mi\n${load.blockTrips[csvBlockId].map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`
+                              : null}
+                            availableBackups={available.map((d) => ({ ...d, onSelect: () => assignBlockBackup(load.id, bn, d.id) }))}
+                            onCancel={() => toggleBlockCancel(load.id, bn)}
+                            onAssign={() => setAssigningBlock(isAssigning ? null : key)}
+                            onRemoveBackup={() => removeBlockBackup(load.id, bn)}
+                            onDrop={() => dropBlock(load.id, bn)}
+                            onUndrop={() => undropBlock(load.id, bn)}
+                          />
+                        </div>
                       );
                     })}
-                    <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: 8, fontSize: 9, color: B.dim, whiteSpace: "nowrap" }}>
-                      {hasPrimarySecondary ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2, marginLeft: 6, fontSize: 9, color: B.dim, whiteSpace: "nowrap", maxWidth: csvRows ? 90 : 160, overflow: "hidden", flexShrink: 0 }}>
+                      {csvRows ? (
                         <>
-                          <span style={{ color: B.green }}>P: D{load.primaryDriver} → B1, B3</span>
-                          <span style={{ color: B.gold }}>S: D{load.secondaryDriver} → B2, B4</span>
+                          <span style={{ color: B.muted, fontSize: 8 }}>{load.blockIds?.length || 0}b · {load.tripData?.length || 0}t</span>
+                          <span style={{ color: B.subtle, fontSize: 7, overflow: "hidden", textOverflow: "ellipsis" }}>
+                            {load.facilities?.slice(0, 2).join("→")}
+                          </span>
+                        </>
+                      ) : hasPrimarySecondary ? (
+                        <>
+                          <span style={{ color: B.green }}>P: {getDriverName(load.primaryDriver)}</span>
+                          <span style={{ color: B.gold }}>S: {getDriverName(load.secondaryDriver)}</span>
                         </>
                       ) : (
-                        <span style={{ color: B.green }}>D{load.primaryDriver} → B1, B2, B3</span>
+                        <span style={{ color: B.green }}>{getDriverName(load.primaryDriver)}</span>
                       )}
-                      <span style={{ color: B.subtle }}>10hr rest between</span>
                     </div>
                   </div>
                 );
@@ -976,9 +1272,187 @@
             </div>
           </div>
 
-          {selectedTruck && (() => {
+          {/* Driver Detail Panel */}
+          {selectedDriver && selectedDriverInfo && (
+            <div className="panel-enter" style={{
+              margin: "0 20px 12px", background: B.card,
+              border: `2px solid rgba(193,59,64,0.3)`, borderRadius: 12, padding: 16,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                <PersonSVG size={28} color={B.red} />
+                <div style={{ flex: 1 }}>
+                  <h4 style={{ margin: 0, color: B.white, fontSize: 15, fontWeight: 700 }}>
+                    {selectedDriverInfo.label}
+                  </h4>
+                  <p style={{ margin: "2px 0 0", fontSize: 11, color: B.muted }}>
+                    Click a driver to see their assigned loads and blocks. Click again to deselect.
+                  </p>
+                </div>
+                {csvRows && (
+                  <div style={{ display: "flex", gap: 16, fontSize: 11, color: B.text }}>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.blockCount || 0) >= 3 ? B.cancelRed : (selectedDriverInfo.blockCount || 0) >= 2 ? B.gold : B.green }}>
+                        {selectedDriverInfo.blockCount || 0}/3
+                      </div>
+                      <div style={{ fontSize: 9, color: B.dim }}>Blocks/Wk</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: B.text }}>{selectedDriverInfo.totalMiles || 0}</div>
+                      <div style={{ fontSize: 9, color: B.dim }}>Total Miles</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: B.text }}>{selectedDriverInfo.tripCount || 0}</div>
+                      <div style={{ fontSize: 9, color: B.dim }}>Trips</div>
+                    </div>
+                    <div style={{ textAlign: "center" }}>
+                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.blockCount || 0) >= 3 ? B.cancelRed : B.green }}>
+                        {(selectedDriverInfo.blockCount || 0) >= 3 ? "MAXED" : "AVAILABLE"}
+                      </div>
+                      <div style={{ fontSize: 9, color: B.dim }}>Backup Status</div>
+                    </div>
+                  </div>
+                )}
+                <button onClick={() => setSelectedDriver(null)} style={{
+                  background: "rgba(255,255,255,0.05)", color: B.muted, border: `1px solid ${B.bdr}`,
+                  borderRadius: 6, padding: "4px 10px", fontSize: 10, cursor: "pointer",
+                  fontFamily: "'Montserrat', sans-serif",
+                }}>✕ Close</button>
+              </div>
+              {/* Assigned loads & blocks */}
+              {(() => {
+                const driverLoads = TRUCKS.filter(t => t.primaryDriver === selectedDriver || t.secondaryDriver === selectedDriver);
+                if (driverLoads.length > 0) return (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+                    <span style={{ fontSize: 9, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, lineHeight: "22px" }}>Assigned:</span>
+                    {driverLoads.map(l => (
+                      <span key={l.id} onClick={(e) => { e.stopPropagation(); setSelectedTruck(l.id); setSelectedDriver(null); }}
+                        style={{
+                          fontSize: 9, padding: "3px 8px", borderRadius: 4, fontWeight: 600, cursor: "pointer",
+                          background: "rgba(193,59,64,0.08)", color: B.redLight, border: `1px solid rgba(193,59,64,0.2)`,
+                          transition: "all 0.15s",
+                        }}
+                        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(193,59,64,0.2)"; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(193,59,64,0.08)"; }}
+                      >
+                        {l.operatorId ? l.operatorId.split("_").slice(-1)[0] : `L${l.id}`}
+                        {csvRows && ` · ${l.blockIds?.length || 0}b`}
+                      </span>
+                    ))}
+                  </div>
+                );
+                return null;
+              })()}
+              {csvRows && selectedDriverInfo.facilities && selectedDriverInfo.facilities.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                  <span style={{ fontSize: 9, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5, lineHeight: "22px" }}>Facilities:</span>
+                  {selectedDriverInfo.facilities.slice(0, 12).map(f => (
+                    <span key={f} style={{
+                      fontSize: 8, padding: "2px 6px", borderRadius: 3, fontWeight: 600,
+                      background: "rgba(102,187,106,0.08)", color: B.greenL, border: `1px solid rgba(102,187,106,0.2)`,
+                    }}>{f}</span>
+                  ))}
+                  {selectedDriverInfo.facilities.length > 12 && (
+                    <span style={{ fontSize: 8, color: B.dim, lineHeight: "22px" }}>+{selectedDriverInfo.facilities.length - 12} more</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Load Detail Panel */}
+          {selectedTruck && !selectedDriver && (() => {
             const truck = TRUCKS.find((t) => t.id === selectedTruck);
             if (!truck) return null;
+
+            // CSV mode: show real trip data per block
+            if (csvRows && truck.blockTrips) {
+              const blockEntries = Object.entries(truck.blockTrips);
+              return (
+                <div style={{
+                  margin: "0 20px 16px", background: B.card,
+                  border: `1px solid rgba(193,59,64,0.2)`, borderRadius: 12, padding: 16,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+                    <TruckSVG size={30} />
+                    <div style={{ flex: 1 }}>
+                      <h4 style={{ margin: 0, color: B.white, fontSize: 14, fontWeight: 700 }}>
+                        {truck.operatorId || `Load ${selectedTruck}`}
+                      </h4>
+                      <div style={{ display: "flex", gap: 8, margin: "4px 0 0", alignItems: "center", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 10, color: B.muted }}>
+                          {truck.tripData?.length || 0} trips · {blockEntries.length} blocks
+                        </span>
+                        {/* Driver badges */}
+                        {[...new Set([truck.primaryDriver, truck.secondaryDriver].filter(Boolean))].map(did => {
+                          const dName = getDriverName(did);
+                          return (
+                            <span key={did} onClick={(e) => { e.stopPropagation(); setSelectedDriver(did); setSelectedTruck(null); }}
+                              style={{
+                                fontSize: 9, padding: "2px 6px", borderRadius: 3, fontWeight: 600, cursor: "pointer",
+                                background: "rgba(102,187,106,0.08)", color: B.greenL, border: `1px solid rgba(102,187,106,0.2)`,
+                                transition: "all 0.15s",
+                              }}
+                              onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(102,187,106,0.2)"; }}
+                              onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(102,187,106,0.08)"; }}
+                            >{dName}</span>
+                          );
+                        })}
+                      </div>
+                      <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
+                        {truck.facilities?.slice(0, 6).map(f => (
+                          <span key={f} style={{ fontSize: 8, padding: "1px 5px", borderRadius: 3, background: "rgba(255,255,255,0.04)", color: B.dim, border: `1px solid ${B.bdr}` }}>{f}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <button onClick={() => setSelectedTruck(null)} style={{
+                      background: "rgba(255,255,255,0.05)", color: B.muted, border: `1px solid ${B.bdr}`,
+                      borderRadius: 6, padding: "4px 10px", fontSize: 10, cursor: "pointer",
+                      fontFamily: "'Montserrat', sans-serif",
+                    }}>✕ Close</button>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, maxHeight: 300, overflowY: "auto" }}>
+                    {blockEntries.map(([bid, trips]) => (
+                      <div key={bid} style={{ background: B.surface, borderRadius: 8, padding: 10, border: `1px solid ${B.bdr}` }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: B.redLight }}>{bid}</span>
+                          <span style={{ fontSize: 9, color: B.dim }}>{trips.length} trip{trips.length > 1 ? "s" : ""}</span>
+                          <span style={{ fontSize: 9, color: B.greenL, marginLeft: "auto" }}>
+                            {Math.round(trips.reduce((s, t) => s + t.distance, 0))} mi total
+                          </span>
+                        </div>
+                        {trips.map((trip, idx) => (
+                          <div key={idx} style={{
+                            display: "flex", alignItems: "center", gap: 8, padding: "4px 0",
+                            borderTop: idx > 0 ? `1px solid ${B.bdr}` : "none", fontSize: 10,
+                          }}>
+                            <span style={{ color: B.text, fontWeight: 600, minWidth: 70 }}>{trip.tripId.slice(0, 10)}</span>
+                            <span style={{ color: B.green }}>{trip.stop1}</span>
+                            <svg width="14" height="8" viewBox="0 0 14 8" style={{ flexShrink: 0 }}>
+                              <line x1="0" y1="4" x2="9" y2="4" stroke={B.subtle} strokeWidth="1" />
+                              <path d="M8,1 L13,4 L8,7" fill={B.subtle} />
+                            </svg>
+                            <span style={{ color: B.gold }}>{trip.stop2}</span>
+                            <span style={{ color: B.dim, marginLeft: "auto" }}>{trip.distance}mi</span>
+                            {trip.stage && (
+                              <span style={{
+                                fontSize: 8, padding: "1px 5px", borderRadius: 3, fontWeight: 600,
+                                background: trip.stage === "In Transit" ? B.greenBg : trip.stage === "Tendered" ? B.goldBg : trip.stage === "Upcoming" ? "rgba(100,181,246,0.10)" : "rgba(255,255,255,0.05)",
+                                color: STAGE_COLORS[trip.stage] || B.dim,
+                              }}>{trip.stage}</span>
+                            )}
+                            {trip.driver && (
+                              <span style={{ fontSize: 8, color: B.dim, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 80 }}>{trip.driver}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            }
+
+            // Demo mode: show rotation timeline
             const timeline = [];
             for (let bn = 1; bn <= blocksPerLoad; bn++) {
               const key = blockKey(truck.id, bn);
@@ -987,7 +1461,7 @@
               const isCancelled = !!cancelledBlocks[key];
               const isPrimary = hasPrimarySecondary ? bn % 2 === 1 : true;
               timeline.push({
-                label: `Block ${bn}`, driver: `Driver ${effDriver}`,
+                label: `Block ${bn}`, driver: getDriverName(effDriver),
                 type: isCancelled && !blockBackups[key] ? "cancelled" : isPrimary ? "primary" : "secondary",
                 isBackup: !!blockBackups[key],
               });
@@ -1048,7 +1522,7 @@
           }}>
             <span style={{ color: B.red, fontWeight: 700 }}>JOYRIDE LOGISTICS, LLC</span>
             <span>·</span><span>joyridelogistics.com</span><span>·</span>
-            <span>Fleet Operations Overview — {mode === "current" ? "New" : "Legacy"} System</span>
+            <span>Fleet Operations Overview — {csvRows ? `${csvRegion !== "ALL" ? csvRegion + " Region" : "All Regions"} · Amazon Relay Data` : `${mode === "current" ? "New" : "Legacy"} System`}</span>
           </div>
         </div>
       );
