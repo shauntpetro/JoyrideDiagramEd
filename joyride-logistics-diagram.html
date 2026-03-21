@@ -208,13 +208,13 @@
             stop2Arr: (row["Stop 2 Planned Arrival"] || "").trim(),
             stage: (row["Trip Stage"] || "").trim(),
             driver: (row["Driver Name"] || "").trim(),
-            // Date/time fields
+            // Date/time fields (with fallbacks)
             stop1ArrDate: (row["Stop 1 Planned Arrival Date"] || "").trim(),
             stop1ArrTime: (row["Stop 1 Planned Arrival Time"] || "").trim(),
             stop1DepDate: (row["Stop 1  Planned Departure Date"] || "").trim(),
             stop1DepTime: (row["Stop 1  Planned Departure Time"] || "").trim(),
-            stop2ArrDate: (row["Stop 2 Planned Arrival Date"] || "").trim(),
-            stop2ArrTime: (row["Stop 2 Planned Arrival Time"] || "").trim(),
+            stop2ArrDate: (row["Stop 2 Planned Arrival Date"] || row["Stop 2  Planned Departure Date"] || "").trim(),
+            stop2ArrTime: (row["Stop 2 Planned Arrival Time"] || row["Stop 2  Planned Departure Time"] || "").trim(),
           });
           // Track which driver owns each block
           const dName = (row["Driver Name"] || "").trim();
@@ -290,6 +290,19 @@
             blockStart, blockEnd,
           });
         });
+      });
+
+      // Sort each driver's blocks chronologically by start date
+      const parseBlockDate = (s) => {
+        if (!s) return Infinity;
+        // Format: "MM/DD/YYYY HH:MM"
+        const [datePart, timePart] = s.split(" ");
+        if (!datePart) return Infinity;
+        const [m, d, y] = datePart.split("/");
+        return new Date(`${y}-${m}-${d}T${timePart || "00:00"}`).getTime() || Infinity;
+      };
+      Object.values(driverBlocksMap).forEach(blocks => {
+        blocks.sort((a, b) => parseBlockDate(a.blockStart) - parseBlockDate(b.blockStart));
       });
 
       // Number drivers within each domicile
