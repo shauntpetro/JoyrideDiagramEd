@@ -84,6 +84,171 @@
       return { drivers, trucks, blocksPerLoad: model.blocksPerLoad, hasPrimarySecondary: model.hasPrimarySecondary };
     }
 
+    // ─── CSV Parser & Data Transformer ───────────────────────────
+    function parseCSV(text) {
+      const lines = text.split("\n").filter(l => l.trim());
+      const headers = lines[0].split(",");
+      return lines.slice(1).map(line => {
+        const vals = [];
+        let current = "";
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++) {
+          if (line[i] === '"') { inQuotes = !inQuotes; }
+          else if (line[i] === ',' && !inQuotes) { vals.push(current.trim()); current = ""; }
+          else { current += line[i]; }
+        }
+        vals.push(current.trim());
+        const obj = {};
+        headers.forEach((h, i) => { obj[h.trim()] = vals[i] || ""; });
+        return obj;
+      });
+    }
+
+    function transformCSVData(rows, regionFilter) {
+      // Group rows by Operator ID (= seat/load)
+      const byOperator = {};
+      const driverSet = new Map(); // name → id
+      let nextDriverId = 1;
+
+      rows.forEach(row => {
+        const opId = row["Operator ID"] || "";
+        const driverName = row["Driver Name"] || "";
+        const blockId = row["Block ID"] || "";
+        if (!opId && !driverName) return; // skip empty rows
+
+        if (driverName && !driverSet.has(driverName)) {
+          driverSet.set(driverName, nextDriverId++);
+        }
+
+        if (opId) {
+          if (!byOperator[opId]) byOperator[opId] = { trips: [], drivers: new Set(), blocks: new Set() };
+          byOperator[opId].trips.push(row);
+          if (driverName) byOperator[opId].drivers.add(driverName);
+          if (blockId) byOperator[opId].blocks.add(blockId);
+        }
+      });
+
+      // Extract regions from Operator IDs
+      const regions = new Set();
+      Object.keys(byOperator).forEach(opId => {
+        const parts = opId.split("_");
+        if (parts.length >= 2) regions.add(parts[1]);
+      });
+
+      // Filter by region if specified
+      const filteredOps = Object.entries(byOperator).filter(([opId]) => {
+        if (!regionFilter || regionFilter === "ALL") return true;
+        const parts = opId.split("_");
+        return parts.length >= 2 && parts[1] === regionFilter;
+      });
+
+      // Sort by Operator ID
+      filteredOps.sort(([a], [b]) => a.localeCompare(b));
+
+      // Build drivers and loads arrays
+      const allDriverNames = [];
+      const trucks = [];
+      let loadId = 1;
+
+      filteredOps.forEach(([opId, data]) => {
+        const driverArr = [...data.drivers];
+        const primary = driverArr[0] ? driverSet.get(driverArr[0]) : null;
+        const secondary = driverArr[1] ? driverSet.get(driverArr[1]) : null;
+
+        // Collect drivers for this seat
+        driverArr.forEach(name => {
+          if (!allDriverNames.includes(name)) allDriverNames.push(name);
+        });
+
+        trucks.push({
+          id: loadId,
+          label: opId,
+          operatorId: opId,
+          primaryDriver: primary,
+          secondaryDriver: secondary || null,
+          blockCount: Math.max(data.blocks.size, 1),
+          tripData: data.trips,
+          blockIds: [...data.blocks],
+        });
+        loadId++;
+      });
+
+      const drivers = allDriverNames.map(name => ({ id: driverSet.get(name), label: name }));
+
+      // Determine blocks per load (max block count across all loads, capped at 6 for display)
+      const maxBlocks = Math.min(Math.max(...trucks.map(t => t.blockCount), 1), 6);
+      const hasPrimSec = trucks.some(t => t.secondaryDriver !== null);
+
+      return {
+        drivers,
+        trucks,
+        blocksPerLoad: maxBlocks,
+        hasPrimarySecondary: hasPrimSec,
+        regions: [...regions].sort(),
+        totalTrips: rows.length,
+        csvMode: true,
+      };
+    }
+
+    // ─── Upload Component ──────────────────────────────────────
+    const CSVUpload = ({ onUpload, onClear, hasData }) => {
+      const [dragging, setDragging] = useState(false);
+      const fileRef = useRef(null);
+
+      const handleFile = (file) => {
+        if (!file || !file.name.endsWith(".csv")) return;
+        const reader = new FileReader();
+        reader.onload = (e) => onUpload(e.target.result);
+        reader.readAsText(file);
+      };
+
+      return (
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {hasData ? (
+            <button onClick={onClear} style={{
+              background: "rgba(100,100,100,0.3)", color: B.muted, border: `1px solid ${B.subtle}`,
+              borderRadius: 4, padding: "5px 12px", fontSize: 10, fontWeight: 700,
+              cursor: "pointer", fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+              letterSpacing: 0.5,
+            }}>Demo Mode</button>
+          ) : null}
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => { e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]); }}
+            onClick={() => fileRef.current?.click()}
+            style={{
+              padding: "5px 14px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+              cursor: "pointer", fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+              letterSpacing: 0.5, transition: "all 0.2s",
+              background: dragging ? "rgba(102,187,106,0.2)" : hasData ? "rgba(102,187,106,0.1)" : "rgba(193,59,64,0.1)",
+              border: dragging ? `2px dashed ${B.green}` : hasData ? `1px solid rgba(102,187,106,0.3)` : `1px solid rgba(193,59,64,0.3)`,
+              color: dragging ? B.greenL : hasData ? B.greenL : B.redLight,
+            }}
+          >
+            {hasData ? "CSV Loaded" : "Upload CSV"}
+            <input ref={fileRef} type="file" accept=".csv" style={{ display: "none" }}
+              onChange={(e) => handleFile(e.target.files[0])} />
+          </div>
+        </div>
+      );
+    };
+
+    // ─── Region Tabs ─────────────────────────────────────────────
+    const RegionTabs = ({ regions, active, onSelect }) => (
+      <div style={{ display: "flex", gap: 4 }}>
+        {["ALL", ...regions].map(r => (
+          <button key={r} onClick={() => onSelect(r)} style={{
+            padding: "4px 10px", borderRadius: 4, fontSize: 10, fontWeight: 700,
+            cursor: "pointer", fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+            letterSpacing: 0.5, border: "none", transition: "all 0.2s",
+            background: active === r ? B.red : "rgba(255,255,255,0.05)",
+            color: active === r ? "#fff" : B.muted,
+          }}>{r}</button>
+        ))}
+      </div>
+    );
+
     const LOGO_SRC = "Joyride-logo-header-footer-01-768x293.png";
 
     const JoyrideLogo = ({ height = 40 }) => (
@@ -259,10 +424,56 @@
       const [hoveredTruck, setHoveredTruck] = useState(null);
       const [selectedTruck, setSelectedTruck] = useState(null);
 
+      // CSV state
+      const [csvRows, setCsvRows] = useState(null);
+      const [csvRegion, setCsvRegion] = useState("ALL");
+      const [csvRegions, setCsvRegions] = useState([]);
+      const [csvStats, setCsvStats] = useState(null);
+
       // Save/restore state per mode so switching tabs preserves work
       const savedStates = useRef({});
 
-      const data = buildData(MODELS[mode]);
+      const handleCSVUpload = (text) => {
+        const rows = parseCSV(text);
+        setCsvRows(rows);
+        const initial = transformCSVData(rows, "ALL");
+        setCsvRegions(initial.regions);
+        setCsvRegion("ALL");
+        setCsvStats({ drivers: initial.drivers.length, loads: initial.trucks.length, trips: initial.totalTrips });
+        // Reset diagram state for fresh CSV view
+        setCancelledBlocks({});
+        setDroppedBlocks({});
+        setBlockBackups({});
+        setCascadeCancelled({});
+        setAssigningBlock(null);
+        setSelectedTruck(null);
+        savedStates.current = {};
+      };
+
+      const handleCSVClear = () => {
+        setCsvRows(null);
+        setCsvRegion("ALL");
+        setCsvRegions([]);
+        setCsvStats(null);
+        setCancelledBlocks({});
+        setDroppedBlocks({});
+        setBlockBackups({});
+        setCascadeCancelled({});
+        savedStates.current = {};
+      };
+
+      const handleRegionChange = (r) => {
+        setCsvRegion(r);
+        setCancelledBlocks({});
+        setDroppedBlocks({});
+        setBlockBackups({});
+        setCascadeCancelled({});
+        setAssigningBlock(null);
+        setSelectedTruck(null);
+      };
+
+      // Build data from CSV or fallback to demo MODELS
+      const data = csvRows ? transformCSVData(csvRows, csvRegion) : buildData(MODELS[mode]);
       const { drivers: DRIVERS, trucks: TRUCKS, blocksPerLoad, hasPrimarySecondary } = data;
       const BLOCK_NUMS = Array.from({ length: blocksPerLoad }, (_, i) => i + 1);
 
@@ -420,7 +631,7 @@
           if (el && el.isConnected) { const r = el.getBoundingClientRect(); bp[id] = { x: r.left - ox, y: r.top + r.height / 2 - oy }; }
         }
         setPositions({ drivers: dp, trucks: tp, blocks: bp });
-      }, [mode]);
+      }, [mode, csvRegion]);
 
       useEffect(() => {
         const t = setTimeout(measurePositions, 150);
@@ -430,7 +641,7 @@
 
       useLayoutEffect(() => {
         measurePositions();
-      }, [mode, measurePositions]);
+      }, [mode, csvRegion, measurePositions]);
 
       useEffect(() => {
         const t = setTimeout(measurePositions, 60);
@@ -492,8 +703,17 @@
               <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.12)" }} />
               <span style={{ fontSize: 13, fontWeight: 600, color: B.muted, letterSpacing: 0.5 }}>Fleet Operations</span>
             </div>
-            <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-              <ModelToggle mode={mode} onToggle={handleToggle} />
+            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+              {!csvRows && <ModelToggle mode={mode} onToggle={handleToggle} />}
+              {csvRows && csvRegions.length > 0 && (
+                <RegionTabs regions={csvRegions} active={csvRegion} onSelect={handleRegionChange} />
+              )}
+              <CSVUpload onUpload={handleCSVUpload} onClear={handleCSVClear} hasData={!!csvRows} />
+              {csvStats && (
+                <div style={{ fontSize: 10, color: B.greenL, fontWeight: 600 }}>
+                  {csvStats.drivers} drivers · {csvStats.loads} seats · {csvStats.trips} trips
+                </div>
+              )}
               {cancelCount > 0 && (
                 <div style={{ fontSize: 12, color: "#ef9a9a", fontWeight: 500 }}>
                   {cancelCount} block{cancelCount > 1 ? "s" : ""} called off
@@ -545,7 +765,7 @@
             </span>
           </div>
 
-          <div key={mode} ref={containerRef} style={{ position: "relative", display: "flex", padding: "24px 20px", gap: 0, background: B.bg }}>
+          <div key={`${mode}-${csvRegion}`} ref={containerRef} style={{ position: "relative", display: "flex", padding: "24px 20px", gap: 0, background: B.bg }}>
 
             {positions && (
               <svg style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1 }}>
@@ -581,7 +801,7 @@
               </svg>
             )}
 
-            <div style={{ flex: "0 0 150px", display: "flex", flexDirection: "column", zIndex: 2, paddingRight: 8 }}>
+            <div style={{ flex: csvRows ? "0 0 200px" : "0 0 150px", display: "flex", flexDirection: "column", zIndex: 2, paddingRight: 8 }}>
               <div style={{
                 fontSize: 12, fontWeight: 700, color: B.redLight, textAlign: "center",
                 textTransform: "uppercase", letterSpacing: 1.5, height: HEADER_H,
@@ -631,7 +851,10 @@
                 display: "flex", alignItems: "center", justifyContent: "center",
                 borderBottom: `1px solid ${B.bdr}`, boxSizing: "border-box",
               }}>
-                {TRUCKS.length} Loads · {blocksPerLoad} Blocks Each
+                {csvRows
+                  ? `${TRUCKS.length} Seats${csvRegion !== "ALL" ? ` (${csvRegion})` : ""} · Up to ${blocksPerLoad} Blocks`
+                  : `${TRUCKS.length} Loads · ${blocksPerLoad} Blocks Each`
+                }
               </div>
               {TRUCKS.map((load) => {
                 const isHl = hoveredTruck === load.id || selectedTruck === load.id;
@@ -642,10 +865,10 @@
                     onMouseEnter={() => setHoveredTruck(load.id)} onMouseLeave={() => setHoveredTruck(null)}
                   >
                     <div style={{
-                      fontSize: 10, fontWeight: 700, color: isHl ? B.redLight : B.muted,
-                      width: 28, textAlign: "center", flexShrink: 0,
+                      fontSize: csvRows ? 8 : 10, fontWeight: 700, color: isHl ? B.redLight : B.muted,
+                      width: csvRows ? 48 : 28, textAlign: "center", flexShrink: 0, lineHeight: 1.2,
                     }}>
-                      L{load.id}
+                      {load.operatorId ? load.operatorId.split("_").slice(-1)[0] : `L${load.id}`}
                     </div>
                     {BLOCK_NUMS.map((bn) => {
                       const key = blockKey(load.id, bn);
@@ -658,7 +881,7 @@
                         <BlockNode
                           key={bn}
                           label={`B${bn}`}
-                          driverLabel={`D${origDriver}`}
+                          driverLabel={origDriver ? `D${origDriver}` : "—"}
                           highlight={isHl}
                           cancelled={isCancelled}
                           dropped={!!droppedBlocks[key]}
