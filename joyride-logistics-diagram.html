@@ -61,10 +61,10 @@
     };
 
     const DRIVER_NAMES = [
-      "J. Martinez", "R. Johnson", "M. Williams", "T. Brown", "D. Garcia",
-      "K. Miller", "A. Davis", "S. Rodriguez", "C. Wilson", "L. Anderson",
-      "B. Thomas", "P. Jackson", "N. White", "F. Harris", "E. Martin",
-      "G. Thompson", "H. Moore", "W. Taylor", "V. Clark", "I. Lewis",
+      "M. Neuer", "J. Kimmich", "D. Upamecano", "M. de Ligt", "A. Davies",
+      "J. Musiala", "L. Goretzka", "T. Muller", "L. Sane", "S. Gnabry",
+      "H. Kane", "K. Coman", "R. Guerreiro", "N. Mazraoui", "E. Laimer",
+      "B. Pavard", "M. Tel", "P. Chupo", "J. Stanisic", "G. Peretz",
     ];
 
     function buildData(model) {
@@ -131,23 +131,23 @@
     );
 
     const BlockNode = ({ label, driverLabel, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, onRemoveBackup, dropped, onDrop, onUndrop }) => (
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 90, position: "relative" }}>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", width: 105, position: "relative" }}>
         <div
-          onClick={dropped ? onUndrop : onCancel}
+          onClick={(e) => { e.stopPropagation(); (dropped ? onUndrop : onCancel)(); }}
           style={{
             width: "100%",
-            background: dropped ? "rgba(100,100,100,0.12)" : cancelled ? B.cancelBg : highlight ? B.redSub : B.surface,
-            border: dropped ? `2px solid ${B.dim}` : cancelled ? `2px solid ${B.cancelRed}` : highlight ? `2px solid rgba(193,59,64,0.4)` : `1px solid ${B.bdrL}`,
-            borderRadius: 10, padding: "14px 10px", textAlign: "center", cursor: "pointer",
+            background: dropped ? "rgba(100,100,100,0.12)" : cancelled ? B.cancelBg : B.surface,
+            border: dropped ? `2px solid ${B.dim}` : cancelled ? `2px solid ${B.cancelRed}` : `1px solid ${B.bdrL}`,
+            borderRadius: 10, padding: "16px 12px", textAlign: "center", cursor: "pointer",
             transition: "all 0.2s ease", opacity: dropped ? 0.4 : 1,
           }}
         >
-          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.5, color: dropped ? B.dim : cancelled ? B.cancelRed : highlight ? B.redLight : B.text, textDecoration: dropped ? "line-through" : "none" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: 0.5, color: dropped ? B.dim : cancelled ? B.cancelRed : B.text, textDecoration: dropped ? "line-through" : "none" }}>
             {label}
           </div>
           <div style={{
             fontSize: 11, marginTop: 4, fontWeight: 600,
-            color: dropped ? B.dim : cancelled ? B.cancelRed : backupAssigned ? B.bkpL : highlight ? B.white : B.muted,
+            color: dropped ? B.dim : cancelled ? B.cancelRed : backupAssigned ? B.bkpL : B.muted,
             textDecoration: (cancelled && !backupAssigned) || dropped ? "line-through" : "none",
           }}>
             {dropped ? "N/A" : backupAssigned ? `D${backupAssigned}` : driverLabel}
@@ -253,10 +253,14 @@
       const [cancelledBlocks, setCancelledBlocks] = useState({});
       const [droppedBlocks, setDroppedBlocks] = useState({});
       const [blockBackups, setBlockBackups] = useState({});
+      const [cascadeCancelled, setCascadeCancelled] = useState({});
       const [assigningBlock, setAssigningBlock] = useState(null);
       const [hoveredDriver, setHoveredDriver] = useState(null);
       const [hoveredTruck, setHoveredTruck] = useState(null);
       const [selectedTruck, setSelectedTruck] = useState(null);
+
+      // Save/restore state per mode so switching tabs preserves work
+      const savedStates = useRef({});
 
       const data = buildData(MODELS[mode]);
       const { drivers: DRIVERS, trucks: TRUCKS, blocksPerLoad, hasPrimarySecondary } = data;
@@ -264,12 +268,27 @@
 
       const handleToggle = (newMode) => {
         if (newMode === mode) return;
+        // Save current mode's state
+        savedStates.current[mode] = {
+          cancelledBlocks, droppedBlocks, blockBackups, cascadeCancelled,
+        };
+        // Clear refs for new layout
         driverRefs.current = {};
         truckRefs.current = {};
         blockGroupRefs.current = {};
-        setCancelledBlocks({});
-        setDroppedBlocks({});
-        setBlockBackups({});
+        // Restore saved state for new mode, or start fresh
+        const saved = savedStates.current[newMode];
+        if (saved) {
+          setCancelledBlocks(saved.cancelledBlocks);
+          setDroppedBlocks(saved.droppedBlocks);
+          setBlockBackups(saved.blockBackups);
+          setCascadeCancelled(saved.cascadeCancelled);
+        } else {
+          setCancelledBlocks({});
+          setDroppedBlocks({});
+          setBlockBackups({});
+          setCascadeCancelled({});
+        }
         setAssigningBlock(null);
         setSelectedTruck(null);
         setHoveredDriver(null);
@@ -289,6 +308,7 @@
       const isDriverCalledOff = (driverId) => {
         for (const [key, cancelled] of Object.entries(cancelledBlocks)) {
           if (!cancelled) continue;
+          if (cascadeCancelled[key]) continue; // Skip cascade-cancelled blocks
           const [tid, bnum] = key.split("-").map(Number);
           if (getOriginalDriver(tid, bnum) === driverId && !blockBackups[key]) return true;
         }
@@ -316,6 +336,7 @@
           if (d.id === truck.primaryDriver || d.id === truck.secondaryDriver) return false;
           for (const bk of Object.keys(cancelledBlocks)) {
             if (!cancelledBlocks[bk]) continue;
+            if (cascadeCancelled[bk]) continue; // Cascade-cancelled blocks don't disqualify drivers
             const [tid, bn] = bk.split("-").map(Number);
             if (getOriginalDriver(tid, bn) === d.id && !blockBackups[bk]) return false;
           }
@@ -333,6 +354,7 @@
           if (next[key]) {
             delete next[key];
             setBlockBackups((bb) => { const n = { ...bb }; delete n[key]; return n; });
+            setCascadeCancelled((cc) => { const n = { ...cc }; delete n[key]; return n; });
           } else {
             next[key] = true;
           }
@@ -352,6 +374,7 @@
           const bk = blockKey(homeTruck.id, blockNum);
           if (!cancelledBlocks[bk]) {
             setCancelledBlocks((prev) => ({ ...prev, [bk]: true }));
+            setCascadeCancelled((prev) => ({ ...prev, [bk]: true }));
           }
         }
       };
@@ -376,8 +399,10 @@
         setCancelledBlocks({});
         setDroppedBlocks({});
         setBlockBackups({});
+        setCascadeCancelled({});
         setAssigningBlock(null);
         setSelectedTruck(null);
+        delete savedStates.current[mode];
       };
 
       const measurePositions = useCallback(() => {
@@ -413,7 +438,6 @@
       }, [cancelledBlocks, blockBackups, assigningBlock, measurePositions]);
 
       const getLineColor = (driverId, truckId) => {
-        if (isDriverCalledOff(driverId)) return B.cancelRed;
         if (Object.entries(blockBackups).some(([k, v]) => v === driverId && k.startsWith(`${truckId}-`))) return B.bkp;
         const truck = TRUCKS.find((t) => t.id === truckId);
         if (hoveredDriver === driverId || hoveredTruck === truckId) return B.red;
@@ -422,7 +446,6 @@
       };
 
       const getLineOpacity = (driverId) => {
-        if (isDriverCalledOff(driverId)) return 0.15;
         if (hoveredDriver && hoveredDriver !== driverId) return 0.05;
         if (hoveredTruck && !TRUCKS.find((t) => t.id === hoveredTruck && (t.primaryDriver === driverId || t.secondaryDriver === driverId))) return 0.05;
         return 0.45;
@@ -452,7 +475,7 @@
       const droppedCount = Object.keys(droppedBlocks).length;
 
       const HEADER_H = 36;
-      const SLOT_H = hasPrimarySecondary ? 96 : 76;
+      const SLOT_H = hasPrimarySecondary ? 116 : 90;
       const DRIVER_H = hasPrimarySecondary ? SLOT_H / 2 : SLOT_H;
       const ROW = { boxSizing: "border-box" };
 
@@ -535,7 +558,7 @@
                   const cpX = dx * 0.4;
                   const w = type === "backup" ? 2 : hoveredDriver === driverId ? 2 : 1.5;
                   const op = getLineOpacity(driverId);
-                  const dash = isDriverCalledOff(driverId) ? "4,4" : type === "backup" ? "6,3" : "none";
+                  const dash = type === "backup" ? "6,3" : "none";
                   const useStraight = !hasPrimarySecondary && type !== "backup";
                   return (
                     <g key={`${type}-d${driverId}-t${truckId}`}>
@@ -570,7 +593,6 @@
               {DRIVERS.map((d) => {
                 const load = TRUCKS.find((t) => t.primaryDriver === d.id || t.secondaryDriver === d.id);
                 const isPrimary = load?.primaryDriver === d.id;
-                const calledOff = isDriverCalledOff(d.id);
                 const isBkp = isDriverBackup(d.id);
                 const isHov = hoveredDriver === d.id;
                 const bkpBlocks = getDriverBackupBlocks(d.id);
@@ -580,13 +602,13 @@
                     style={{
                       ...ROW, display: "flex", alignItems: "center", gap: 6, padding: "0 10px",
                       height: DRIVER_H, borderRadius: 8,
-                      background: calledOff ? B.cancelBg : isBkp ? B.bkpBg : isHov ? B.redSub : "transparent",
-                      border: calledOff ? `1.5px solid rgba(239,83,80,0.4)` : isBkp ? `1.5px solid rgba(186,104,200,0.3)` : isHov ? `1.5px solid rgba(193,59,64,0.3)` : `1.5px solid transparent`,
-                      transition: "all 0.2s ease", opacity: calledOff ? 0.5 : 1,
+                      background: isBkp ? B.bkpBg : isHov ? B.redSub : "transparent",
+                      border: isBkp ? `1.5px solid rgba(186,104,200,0.3)` : isHov ? `1.5px solid rgba(193,59,64,0.3)` : `1.5px solid transparent`,
+                      transition: "all 0.2s ease",
                     }}
                   >
-                    <PersonSVG size={16} color={calledOff ? B.cancelRed : isBkp ? B.bkp : isHov ? B.red : isPrimary ? B.green : B.gold} />
-                    <span style={{ fontSize: 12, fontWeight: 600, flex: 1, textDecoration: calledOff ? "line-through" : "none", color: calledOff ? B.muted : B.text }}>
+                    <PersonSVG size={16} color={isBkp ? B.bkp : isHov ? B.red : isPrimary ? B.green : B.gold} />
+                    <span style={{ fontSize: 12, fontWeight: 600, flex: 1, color: B.text }}>
                       {d.label}
                     </span>
                     {isBkp && <span style={{ fontSize: 8, color: B.bkpL, fontWeight: 700 }}>BKP</span>}
@@ -595,7 +617,7 @@
                     )}
                     <span style={{
                       width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
-                      background: calledOff ? B.cancelRed : isBkp ? B.bkp : isPrimary ? B.green : B.gold,
+                      background: isBkp ? B.bkp : isPrimary ? B.green : B.gold,
                     }} />
                   </div>
                 );
@@ -616,7 +638,7 @@
                 return (
                   <div key={load.id} ref={(el) => (blockGroupRefs.current[load.id] = el)}
                     onClick={() => setSelectedTruck(selectedTruck === load.id ? null : load.id)}
-                    style={{ ...ROW, display: "flex", gap: 12, alignItems: "center", height: SLOT_H, cursor: "pointer" }}
+                    style={{ ...ROW, display: "flex", gap: 18, alignItems: "center", height: SLOT_H, cursor: "pointer" }}
                     onMouseEnter={() => setHoveredTruck(load.id)} onMouseLeave={() => setHoveredTruck(null)}
                   >
                     <div style={{
