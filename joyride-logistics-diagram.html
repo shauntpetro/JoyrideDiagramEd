@@ -191,8 +191,9 @@
         const secondary = driverArr[1] ? driverSet.get(driverArr[1]) : null;
         driverArr.forEach(name => { if (!allDriverNames.includes(name)) allDriverNames.push(name); });
 
-        // Build per-block trip details
+        // Build per-block trip details and per-block driver mapping
         const blockTrips = {};
+        const blockDriverMap = {}; // blockId → driverName
         data.trips.forEach(row => {
           const bid = (row["Block ID"] || "").trim();
           if (!bid) return;
@@ -208,13 +209,24 @@
             stage: (row["Trip Stage"] || "").trim(),
             driver: (row["Driver Name"] || "").trim(),
           });
+          // Track which driver owns each block
+          const dName = (row["Driver Name"] || "").trim();
+          if (dName && !blockDriverMap[bid]) blockDriverMap[bid] = dName;
+        });
+
+        // Build ordered list of block drivers (index-aligned with blockIds)
+        const blockIds = [...data.blocks];
+        const blockDrivers = blockIds.map(bid => {
+          const dName = blockDriverMap[bid];
+          return dName ? (driverSet.get(dName) || null) : null;
         });
 
         trucks.push({
           id: loadId, label: opId, operatorId: opId,
           primaryDriver: primary, secondaryDriver: secondary || null,
           blockCount: Math.max(data.blocks.size, 1),
-          tripData: data.trips, blockIds: [...data.blocks],
+          tripData: data.trips, blockIds,
+          blockDrivers, // actual driver ID per block index (aligned with blockIds)
           facilities: [...data.facilities],
           blockTrips, // { blockId → [{tripId, stop1, stop2, distance, ...}] }
         });
@@ -937,6 +949,10 @@
 
       const getOriginalDriver = (truckId, blockNum) => {
         const truck = TRUCKS.find((t) => t.id === truckId);
+        // In CSV mode, use actual block-driver mapping from CSV data
+        if (csvRows && truck.blockDrivers && truck.blockDrivers[blockNum - 1] !== undefined) {
+          return truck.blockDrivers[blockNum - 1];
+        }
         if (!hasPrimarySecondary) return truck.primaryDriver;
         return blockNum % 2 === 1 ? truck.primaryDriver : truck.secondaryDriver;
       };
@@ -1586,6 +1602,8 @@
                       {load.operatorId ? load.operatorId.split("_").slice(-1)[0] : `L${load.id}`}
                     </div>
                     {BLOCK_NUMS.map((bn) => {
+                      // In CSV mode, only render blocks that actually exist
+                      if (csvRows && load.blockIds && bn > load.blockIds.length) return null;
                       const key = blockKey(load.id, bn);
                       const origDriver = getOriginalDriver(load.id, bn);
                       const isCancelled = !!cancelledBlocks[key];
