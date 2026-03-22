@@ -723,30 +723,64 @@
         const hosEntry = hosDrivers.find(h => h.driver?.id === samsaraId);
         if (!hosEntry) return d;
 
-        const clocks = hosEntry.clocks || {};
-        // Samsara returns durations in milliseconds
-        const driveRemainingMs = clocks.driveRemaining?.timeRemainingMs ?? null;
-        const dutyRemainingMs = clocks.shiftRemaining?.timeRemainingMs ?? null;
-        const cycleRemainingMs = clocks.cycleRemaining?.timeRemainingMs ?? null;
+        // Samsara HOS clocks — try multiple possible field paths
+        const clocks = hosEntry.clocks || hosEntry;
+
+        // Drive remaining: try multiple API response formats
+        const driveRemainingMs = clocks.driveRemaining?.timeRemainingMs
+          ?? clocks.driveRemaining?.durationMs
+          ?? clocks.drive?.timeRemainingMs ?? null;
+        // Shift/duty remaining
+        const dutyRemainingMs = clocks.shiftRemaining?.timeRemainingMs
+          ?? clocks.shiftRemaining?.durationMs
+          ?? clocks.shift?.timeRemainingMs ?? null;
+        // Cycle remaining
+        const cycleRemainingMs = clocks.cycleRemaining?.timeRemainingMs
+          ?? clocks.cycleRemaining?.durationMs
+          ?? clocks.cycle?.timeRemainingMs ?? null;
+        // Time until break
+        const breakRemainingMs = clocks.timeUntilBreak?.timeRemainingMs
+          ?? clocks.timeUntilBreak?.durationMs
+          ?? clocks.break?.timeRemainingMs ?? null;
 
         const driveRemainingMin = driveRemainingMs !== null ? Math.round(driveRemainingMs / 60000) : null;
         const dutyRemainingMin = dutyRemainingMs !== null ? Math.round(dutyRemainingMs / 60000) : null;
         const cycleRemainingMin = cycleRemainingMs !== null ? Math.round(cycleRemainingMs / 60000) : null;
+        const breakRemainingMin = breakRemainingMs !== null ? Math.round(breakRemainingMs / 60000) : null;
 
-        // Current duty status
-        const currentStatus = hosEntry.currentDutyStatus?.hosStatusType || null;
+        // Current duty status — try multiple paths
+        const currentStatus = hosEntry.currentDutyStatus?.hosStatusType
+          || hosEntry.hosStatusType
+          || hosEntry.currentStatus || null;
         const statusMap = {
-          "driving": "driving",
-          "onDuty": "on_duty",
-          "offDuty": "off_duty",
-          "sleeperBerth": "sleeper_berth",
+          "driving": "driving", "Driving": "driving",
+          "onDuty": "on_duty", "On Duty": "on_duty", "ON_DUTY": "on_duty",
+          "offDuty": "off_duty", "Off Duty": "off_duty", "OFF_DUTY": "off_duty",
+          "sleeperBerth": "sleeper_berth", "Sleeper Berth": "sleeper_berth", "SLEEPER_BERTH": "sleeper_berth",
         };
+
+        // Time in current status
+        const timeInStatusMs = hosEntry.currentDutyStatus?.timeInCurrentStatusMs
+          ?? hosEntry.timeInCurrentStatusMs ?? null;
+        const timeInStatusMin = timeInStatusMs !== null ? Math.round(timeInStatusMs / 60000) : null;
+
+        // Vehicle info
+        const vehicleId = hosEntry.driver?.vehicleId || hosEntry.vehicleId || hosEntry.vehicle?.id || null;
+        const vehicleName = hosEntry.vehicle?.name || null;
 
         // Calculate real weekly hours from cycle (70-hr cycle minus remaining)
         const cycleMaxMin = 70 * 60; // 70 hours in minutes
         const realWeeklyHours = cycleRemainingMin !== null
-          ? Math.round((cycleMaxMin - cycleRemainingMin) / 6) / 10 // hours used, 1 decimal
+          ? Math.round((cycleMaxMin - cycleRemainingMin) / 6) / 10
           : d.estWeeklyHours;
+
+        // Format remaining times as "Xh Ym"
+        const fmtRemaining = (min) => {
+          if (min === null) return null;
+          const h = Math.floor(min / 60);
+          const m = min % 60;
+          return m > 0 ? `${h}h${m}m` : `${h}h`;
+        };
 
         return {
           ...d,
@@ -754,11 +788,18 @@
           hosDriveRemaining: driveRemainingMin,
           hosDutyRemaining: dutyRemainingMin,
           hosCycleRemaining: cycleRemainingMin,
-          cycleRemaining: cycleRemainingMin !== null ? Math.round(cycleRemainingMin / 6) / 10 : d.cycleRemaining, // minutes → hours
-          estWeeklyHours: realWeeklyHours, // Override CSV estimate with real data
+          hosBreakRemaining: breakRemainingMin,
+          hosTimeInStatus: timeInStatusMin,
+          hosDriveRemainingFmt: fmtRemaining(driveRemainingMin),
+          hosDutyRemainingFmt: fmtRemaining(dutyRemainingMin),
+          hosCycleRemainingFmt: fmtRemaining(cycleRemainingMin),
+          hosBreakRemainingFmt: fmtRemaining(breakRemainingMin),
+          cycleRemaining: cycleRemainingMin !== null ? Math.round(cycleRemainingMin / 6) / 10 : d.cycleRemaining,
+          estWeeklyHours: realWeeklyHours,
           hosSource: "samsara",
-          // Location from Samsara (via driver's assigned vehicle)
-          currentLocation: hosEntry.driver?.vehicleId ? (vehicleLocations[hosEntry.driver.vehicleId] || null) : null,
+          vehicleName,
+          // Location from Samsara
+          currentLocation: vehicleId ? (vehicleLocations[vehicleId] || vehicleLocations[vehicleName] || null) : null,
         };
       });
     }
@@ -915,7 +956,7 @@
         )}
         {backupAssigned && (
           <div style={{ marginTop: 3, display: "flex", alignItems: "center", gap: 4 }}>
-            <span style={{ fontSize: 8, color: B.bkpL, fontWeight: 600 }}>Backup Assigned</span>
+            <span style={{ fontSize: 8, color: B.bkpL, fontWeight: 600 }}>{backupName || "Backup Assigned"}</span>
             <button
               onClick={(e) => { e.stopPropagation(); onRemoveBackup(); }}
               style={{ background: "rgba(239,83,80,0.15)", color: "#ef9a9a", border: "1px solid rgba(239,83,80,0.3)", borderRadius: 4, padding: "1px 5px", fontSize: 8, cursor: "pointer", lineHeight: "14px" }}
@@ -2108,11 +2149,16 @@
                                 {d.blockCount}/3
                               </span>
                               <span style={{ fontSize: 7, fontWeight: 600, color: d.cycleRemaining > 30 ? B.greenL : d.cycleRemaining > 10 ? B.gold : B.cancelRed }}>
-                                {d.cycleRemaining}h left
+                                {d.hosSource ? (d.hosCycleRemainingFmt || `${d.cycleRemaining}h`) : `${d.cycleRemaining}h`} cyc
                               </span>
-                              {d.hosSource && (
+                              {d.hosSource && d.hosDutyRemainingFmt && (
                                 <span style={{ fontSize: 7, color: (d.hosDutyRemaining || 0) > 480 ? B.greenL : (d.hosDutyRemaining || 0) > 240 ? B.gold : B.cancelRed }}>
-                                  · {Math.round((d.hosDutyRemaining || 0) / 60)}h duty
+                                  · {d.hosDutyRemainingFmt} shift
+                                </span>
+                              )}
+                              {d.hosSource && d.hosDriveRemainingFmt && (
+                                <span style={{ fontSize: 7, color: B.dim }}>
+                                  · {d.hosDriveRemainingFmt} drive
                                 </span>
                               )}
                               <span style={{ fontSize: 7, color: B.dim }}>
@@ -2717,11 +2763,17 @@
             </div>
           )}
 
-          {/* Driver Detail Panel */}
+          {/* Driver Detail Panel — popup overlay */}
           {selectedDriver && selectedDriverInfo && (
-            <div className="panel-enter" style={{
-              margin: "0 20px 12px", background: B.card,
-              border: `2px solid rgba(193,59,64,0.3)`, borderRadius: 12, padding: 16,
+            <div style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              background: "rgba(0,0,0,0.3)", zIndex: 900,
+              display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 80,
+            }} onClick={() => setSelectedDriver(null)}>
+            <div className="panel-enter" onClick={(e) => e.stopPropagation()} style={{
+              background: B.card, width: "90%", maxWidth: 700, maxHeight: "70vh", overflowY: "auto",
+              border: `2px solid rgba(193,59,64,0.3)`, borderRadius: 14, padding: 20,
+              boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
             }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
                 <PersonSVG size={28} color={B.red} />
@@ -2730,10 +2782,10 @@
                     {selectedDriverInfo.label}
                   </h4>
                   <p style={{ margin: "2px 0 0", fontSize: 11, color: B.muted }}>
-                    {selectedDriverInfo.currentLocation
-                      ? `📍 ${selectedDriverInfo.currentLocation}`
-                      : "Click a driver to see their assigned loads and blocks. Click again to deselect."
-                    }
+                    {selectedDriverInfo.currentLocation && `📍 ${selectedDriverInfo.currentLocation}`}
+                    {selectedDriverInfo.currentLocation && selectedDriverInfo.vehicleName && " · "}
+                    {selectedDriverInfo.vehicleName && `🚛 ${selectedDriverInfo.vehicleName}`}
+                    {!selectedDriverInfo.currentLocation && !selectedDriverInfo.vehicleName && "Click a driver to see details. Click outside to close."}
                   </p>
                 </div>
                 {csvRows && (
@@ -2854,6 +2906,32 @@
                   )}
                 </div>
               )}
+              {/* HOS Details from Samsara */}
+              {selectedDriverInfo.hosSource && (
+                <div style={{ marginTop: 10, padding: "10px 12px", background: B.surface, borderRadius: 8, border: `1px solid ${B.bdr}` }}>
+                  <div style={{ fontSize: 9, fontWeight: 700, color: B.muted, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Hours of Service (ELD)</div>
+                  <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                    {[
+                      { label: "Drive Left", value: selectedDriverInfo.hosDriveRemainingFmt, color: B.greenL },
+                      { label: "Shift Left", value: selectedDriverInfo.hosDutyRemainingFmt, color: B.gold },
+                      { label: "Cycle Left", value: selectedDriverInfo.hosCycleRemainingFmt, color: "#64b5f6" },
+                      { label: "Break In", value: selectedDriverInfo.hosBreakRemainingFmt, color: B.bkpL },
+                    ].filter(s => s.value).map(s => (
+                      <div key={s.label} style={{ textAlign: "center", minWidth: 60 }}>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: s.color }}>{s.value}</div>
+                        <div style={{ fontSize: 8, color: B.dim }}>{s.label}</div>
+                      </div>
+                    ))}
+                    {selectedDriverInfo.hosTimeInStatus !== null && (
+                      <div style={{ textAlign: "center", minWidth: 60 }}>
+                        <div style={{ fontSize: 16, fontWeight: 700, color: B.text }}>{Math.floor((selectedDriverInfo.hosTimeInStatus || 0) / 60)}h{(selectedDriverInfo.hosTimeInStatus || 0) % 60}m</div>
+                        <div style={{ fontSize: 8, color: B.dim }}>In Status</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             </div>
           )}
 
