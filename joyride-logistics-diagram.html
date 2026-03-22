@@ -1223,11 +1223,17 @@
         // Estimate proposed block duration in hours
         const proposedDurationHrs = (proposedStart && proposedEnd) ? (proposedEnd - proposedStart) / 3600000 : 10; // default 10h if unknown
 
+        // Determine the domicile of the block's seat
+        const blockDomicile = truck?.operatorId ? truck.operatorId.split("_")[1] : null;
+
         const available = DRIVERS.filter((d) => {
           if (usedAsBackup.has(d.id)) return false;
           if (d.id === truck.primaryDriver || d.id === truck.secondaryDriver) return false;
           // In CSV mode, filter out drivers already at max blocks
           if (csvRows && d.blockCount >= MAX_BLOCKS_PER_WEEK) return false;
+
+          // RULE: Only recommend drivers from the same domicile
+          if (csvRows && blockDomicile && d.domicile && d.domicile !== blockDomicile) return false;
 
           // RULE 1: Exclude drivers with < 34h cycle remaining
           if (csvRows && d.cycleRemaining < MIN_CYCLE_FOR_BACKUP) return false;
