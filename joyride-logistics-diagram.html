@@ -293,14 +293,6 @@
       });
 
       // Sort each driver's blocks chronologically and compute total scheduled hours
-      const parseBlockDate = (s) => {
-        if (!s) return Infinity;
-        // Format: "MM/DD/YYYY HH:MM"
-        const [datePart, timePart] = s.split(" ");
-        if (!datePart) return Infinity;
-        const [m, d, y] = datePart.split("/");
-        return new Date(`${y}-${m}-${d}T${timePart || "00:00"}`).getTime() || Infinity;
-      };
       const driverScheduledHours = {}; // driverId → total hours from block time spans
       Object.entries(driverBlocksMap).forEach(([driverId, blocks]) => {
         blocks.sort((a, b) => parseBlockDate(a.blockStart) - parseBlockDate(b.blockStart));
@@ -790,6 +782,15 @@
 
     const MIN_CYCLE_FOR_BACKUP = 34; // hours — minimum cycle remaining to be eligible for backup
 
+    // Parse "MM/DD/YYYY HH:MM" → ms timestamp (used across transform + render)
+    const parseBlockDate = (s) => {
+      if (!s) return Infinity;
+      const [datePart, timePart] = s.split(" ");
+      if (!datePart) return Infinity;
+      const [m, d, y] = datePart.split("/");
+      return new Date(`${y}-${m}-${d}T${timePart || "00:00"}`).getTime() || Infinity;
+    };
+
     const STAGE_COLORS = {
       "In Transit": B.green,
       "Tendered": B.gold,
@@ -812,7 +813,7 @@
       return `${months[parseInt(month, 10)]} ${parseInt(day, 10)} ${h12}:${min}${ampm}`;
     }
 
-    const BlockNode = ({ label, driverLabel, driverName, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, backupName, onRemoveBackup, dropped, onDrop, onUndrop, compact, tooltip, stageColor, blockStart, blockEnd }) => (
+    const BlockNode = ({ label, driverLabel, driverName, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, backupName, onRemoveBackup, dropped, onDrop, onUndrop, compact, tooltip, stageColor, blockStart, blockEnd, seatLabel, durationHrs }) => (
       <div className={cancelled ? "block-cancel" : ""} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: compact ? 100 : 120, position: "relative" }} title={tooltip || ""}>
         <div
           onClick={(e) => { e.stopPropagation(); (dropped ? onUndrop : onCancel)(); }}
@@ -821,10 +822,16 @@
             background: dropped ? "rgba(100,100,100,0.12)" : cancelled ? B.cancelBg : B.surface,
             border: dropped ? `2px solid ${B.dim}` : cancelled ? `2px solid ${B.cancelRed}` : `1px solid ${B.bdrL}`,
             borderTop: !dropped && !cancelled && stageColor ? `3px solid ${stageColor}` : undefined,
-            borderRadius: 10, padding: compact ? "8px 5px" : "14px 8px", textAlign: "center", cursor: "pointer",
+            borderRadius: 10, padding: compact ? "6px 5px" : "14px 8px", textAlign: "center", cursor: "pointer",
             transition: "all 0.2s ease", opacity: dropped ? 0.4 : 1,
           }}
         >
+          {compact && (seatLabel || durationHrs) && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2, padding: "0 1px" }}>
+              <span style={{ fontSize: 6, color: B.dim, fontWeight: 600 }}>{seatLabel || ""}</span>
+              {durationHrs && <span style={{ fontSize: 6, color: B.subtle }}>{durationHrs}h</span>}
+            </div>
+          )}
           <div style={{ fontSize: compact ? 9 : 11, fontWeight: 700, letterSpacing: 0.3, color: dropped ? B.dim : cancelled ? B.cancelRed : B.text, textDecoration: dropped ? "line-through" : "none", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {label}
           </div>
@@ -1204,14 +1211,10 @@
 
       const MAX_BLOCKS_PER_WEEK = 3;
 
-      // Helper to parse block date string → ms timestamp
+      // Wrapper that returns null instead of Infinity for invalid dates
       const parseBlockDateMs = (s) => {
-        if (!s) return null;
-        const [datePart, timePart] = s.split(" ");
-        if (!datePart) return null;
-        const [m, d, y] = datePart.split("/");
-        const ts = new Date(`${y}-${m}-${d}T${timePart || "00:00"}`).getTime();
-        return isNaN(ts) ? null : ts;
+        const ts = parseBlockDate(s);
+        return ts === Infinity ? null : ts;
       };
 
       // Check if two time ranges overlap
@@ -1710,13 +1713,13 @@
                   placeholder="Search drivers..." value={driverSearch} onChange={(e) => setDriverSearch(e.target.value)}
                   style={{ padding: "5px 10px", borderRadius: 6, background: B.surface, border: `1px solid ${B.bdrL}`, color: B.text, fontSize: 11, fontFamily: "'Montserrat', sans-serif", outline: "none", width: 180 }}
                 />
-                {["default", "available", "name", "miles"].map(s => (
+                {["default", "available", "name", "miles", "start"].map(s => (
                   <button key={s} onClick={() => setDriverSort(s)} style={{
                     padding: "3px 8px", borderRadius: 4, fontSize: 9, fontWeight: 600, cursor: "pointer",
                     fontFamily: "'Montserrat', sans-serif", border: "none",
                     background: driverSort === s ? "rgba(193,59,64,0.2)" : "rgba(255,255,255,0.04)",
                     color: driverSort === s ? B.redLight : B.dim,
-                  }}>{s === "default" ? "Default" : s === "available" ? "Avail ↑" : s === "name" ? "A-Z" : "Miles ↓"}</button>
+                  }}>{s === "default" ? "Default" : s === "available" ? "Avail ↑" : s === "name" ? "A-Z" : s === "miles" ? "Miles ↓" : "Start ↑"}</button>
                 ))}
                 <span style={{ marginLeft: "auto", fontSize: 10, color: B.muted }}>
                   {data.domicileOrder?.length || 0} domiciles · {TRUCKS.length} seats · Max {MAX_BLOCKS_PER_WEEK} blks/wk
@@ -1744,6 +1747,11 @@
                     if (driverSort === "available") return (a.blockCount || 0) - (b.blockCount || 0);
                     if (driverSort === "name") return a.label.localeCompare(b.label);
                     if (driverSort === "miles") return (b.totalMiles || 0) - (a.totalMiles || 0);
+                    if (driverSort === "start") {
+                      const aStart = a.blocks?.[0]?.blockStart || "zzz";
+                      const bStart = b.blocks?.[0]?.blockStart || "zzz";
+                      return parseBlockDate(aStart) - parseBlockDate(bStart);
+                    }
                     return a.driverNumber - b.driverNumber;
                   });
                 if (domDrivers.length === 0) return null;
@@ -1756,6 +1764,16 @@
                     }}>
                       <span style={{ fontSize: 12, fontWeight: 700, color: B.red, letterSpacing: 1, textTransform: "uppercase" }}>{dom}</span>
                       <span style={{ fontSize: 9, color: B.dim }}>({domDrivers.length} driver{domDrivers.length !== 1 ? "s" : ""})</span>
+                      {(() => {
+                        const avail = domDrivers.filter(d => d.blockCount < MAX_BLOCKS_PER_WEEK).length;
+                        const full = domDrivers.filter(d => d.blockCount >= MAX_BLOCKS_PER_WEEK).length;
+                        return (
+                          <span style={{ fontSize: 8, color: B.dim, display: "flex", gap: 6 }}>
+                            <span style={{ color: B.greenL }}>{avail} avail</span>
+                            <span style={{ color: full > 0 ? B.cancelRed : B.dim }}>{full} full</span>
+                          </span>
+                        );
+                      })()}
                       <div style={{ flex: 1, height: 1, background: "rgba(193,59,64,0.12)" }} />
                     </div>
 
@@ -1939,6 +1957,12 @@
                             const isAssigning = assigningBlock === key;
                             const available = isAssigning ? getAvailableForBlock(blk.truckId, bn) : [];
                             const stageColor = blk.stage ? STAGE_COLORS[blk.stage] : null;
+                            // Compute block duration
+                            const blkStartMs = parseBlockDate(blk.blockStart || "");
+                            const blkEndMs = parseBlockDate(blk.blockEnd || "");
+                            const durationHrs = (blkStartMs !== Infinity && blkEndMs !== Infinity && blkEndMs > blkStartMs)
+                              ? Math.round((blkEndMs - blkStartMs) / 3600000 * 10) / 10 : null;
+                            const seatLabel = blk.truckLabel ? blk.truckLabel.split("_").slice(-1)[0] : "";
 
                             return (
                               <div key={`${blk.blockId}-${blk.isBackupBlock ? 'bkp' : 'own'}`} style={{ width: 120, flexShrink: 0, position: "relative", zIndex: isAssigning ? 100 : 1 }}>
@@ -1950,10 +1974,13 @@
                                     borderTop: stageColor ? `3px solid ${stageColor}` : undefined,
                                     borderRadius: 10, padding: "8px 5px", textAlign: "center",
                                   }}>
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0 2px" }}>
+                                      <span style={{ fontSize: 6, color: B.bkpL, fontWeight: 600 }}>BKP</span>
+                                      <span style={{ fontSize: 6, color: B.dim }}>{seatLabel}{durationHrs ? ` · ${durationHrs}h` : ""}</span>
+                                    </div>
                                     <div style={{ fontSize: 9, fontWeight: 700, color: B.bkpL, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                       {blk.blockId.slice(0, 8)}
                                     </div>
-                                    <div style={{ fontSize: 7, color: B.bkpL, fontWeight: 600, marginTop: 2 }}>BKP</div>
                                     {blk.blockStart && (
                                       <div style={{ fontSize: 7, color: B.dim, marginTop: 2, lineHeight: 1.3 }}>
                                         <div style={{ color: B.greenL }}>{formatBlockTime(blk.blockStart)}</div>
@@ -1976,7 +2003,9 @@
                                   stageColor={stageColor}
                                   blockStart={blk.blockStart}
                                   blockEnd={blk.blockEnd}
-                                  tooltip={`${blk.blockId}\nSeat: ${blk.truckLabel}\n${blk.trips.length} trips · ${blk.totalMiles} mi\n${blk.blockStart ? `Start: ${blk.blockStart}` : ""}\n${blk.blockEnd ? `End: ${blk.blockEnd}` : ""}\n${blk.trips.map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`}
+                                  seatLabel={seatLabel}
+                                  durationHrs={durationHrs}
+                                  tooltip={`${blk.blockId}\nSeat: ${blk.truckLabel}\n${blk.trips.length} trips · ${blk.totalMiles} mi${durationHrs ? ` · ${durationHrs}h` : ""}\n${blk.blockStart ? `Start: ${blk.blockStart}` : ""}\n${blk.blockEnd ? `End: ${blk.blockEnd}` : ""}\n${blk.trips.map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`}
                                   availableBackups={available.map((ad) => ({ ...ad, onSelect: () => requestBackupAssignment(blk.truckId, bn, ad.id) }))}
                                   onCancel={() => toggleBlockCancel(blk.truckId, bn)}
                                   onAssign={() => setAssigningBlock(isAssigning ? null : key)}
