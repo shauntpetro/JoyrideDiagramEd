@@ -696,6 +696,8 @@
       </div>
     );
 
+    const MIN_CYCLE_FOR_BACKUP = 34; // hours — minimum cycle remaining to be eligible for backup
+
     const STAGE_COLORS = {
       "In Transit": B.green,
       "Tendered": B.gold,
@@ -799,8 +801,8 @@
             onClick={(e) => e.stopPropagation()}
             style={{
               position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 4,
-              background: B.card, border: `1.5px solid ${B.bkp}`, borderRadius: 10, padding: 8, zIndex: 100, minWidth: 160,
-              boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
+              background: B.card, border: `1.5px solid ${B.bkp}`, borderRadius: 10, padding: 8, zIndex: 500, minWidth: 160,
+              boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
             }}
           >
             <div style={{ fontSize: 10, fontWeight: 700, color: B.bkpL, marginBottom: 5, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>
@@ -808,7 +810,7 @@
             </div>
             {availableBackups.length > 0 && (availableBackups[0].blocksRemaining !== undefined || availableBackups[0].hoursScore > 0) && (
               <div style={{ fontSize: 8, color: B.dim, textAlign: "center", marginBottom: 4, fontStyle: "italic" }}>
-                Ranked by proximity{availableBackups[0].hosSource ? ", HOS availability" : ""} & blocks (3 blks/wk max)
+                Ranked by proximity{availableBackups[0].hosSource ? ", HOS" : ""} & cycle (≥34h, no time conflicts)
               </div>
             )}
             {availableBackups.length === 0 ? (
@@ -845,12 +847,16 @@
                             {d.blocksUsed}/3
                           </span>
                           {d.proximityScore > 0 && <span style={{ fontSize: 7, color: B.greenL }}>· {d.proximityScore} shared</span>}
+                          {d.cycleRemaining !== undefined && (
+                            <span style={{ fontSize: 7, color: d.cycleRemaining > 40 ? B.greenL : d.cycleRemaining > 34 ? B.gold : B.cancelRed, fontWeight: 600 }}>
+                              · {d.cycleRemaining}h cyc
+                            </span>
+                          )}
                           {d.hosDutyRemaining !== undefined && (
                             <span style={{ fontSize: 7, color: d.hosDutyRemaining > 480 ? B.greenL : d.hosDutyRemaining > 240 ? B.gold : B.cancelRed, fontWeight: 600 }}>
                               · {Math.round(d.hosDutyRemaining / 60)}h duty
                             </span>
                           )}
-                          {d.totalMiles > 0 && !d.hosSource && <span style={{ fontSize: 7, color: B.dim }}>{d.totalMiles}mi</span>}
                         </div>
                       )}
                     </div>
@@ -1105,16 +1111,64 @@
 
       const MAX_BLOCKS_PER_WEEK = 3;
 
+      // Helper to parse block date string → ms timestamp
+      const parseBlockDateMs = (s) => {
+        if (!s) return null;
+        const [datePart, timePart] = s.split(" ");
+        if (!datePart) return null;
+        const [m, d, y] = datePart.split("/");
+        const ts = new Date(`${y}-${m}-${d}T${timePart || "00:00"}`).getTime();
+        return isNaN(ts) ? null : ts;
+      };
+
+      // Check if two time ranges overlap
+      const blocksOverlap = (startA, endA, startB, endB) => {
+        if (!startA || !endA || !startB || !endB) return false;
+        return startA < endB && startB < endA;
+      };
+
       const getAvailableForBlock = (truckId, blockNum) => {
         const usedAsBackup = new Set(Object.values(blockBackups));
         const truck = TRUCKS.find((t) => t.id === truckId);
         const loadFacilities = truck?.facilities || [];
+
+        // Get the proposed backup block's time window
+        const blockIdx = blockNum - 1;
+        const proposedBlockId = truck?.blockIds?.[blockIdx];
+        const proposedTrips = proposedBlockId && truck.blockTrips?.[proposedBlockId];
+        let proposedStart = null, proposedEnd = null;
+        if (proposedTrips) {
+          proposedTrips.forEach(t => {
+            const s = parseBlockDateMs(t.stop1ArrDate && t.stop1ArrTime ? `${t.stop1ArrDate} ${t.stop1ArrTime}` : null);
+            const e = parseBlockDateMs(t.stop2ArrDate && t.stop2ArrTime ? `${t.stop2ArrDate} ${t.stop2ArrTime}` : null);
+            if (s !== null && (proposedStart === null || s < proposedStart)) proposedStart = s;
+            if (e !== null && (proposedEnd === null || e > proposedEnd)) proposedEnd = e;
+          });
+        }
+        // Estimate proposed block duration in hours
+        const proposedDurationHrs = (proposedStart && proposedEnd) ? (proposedEnd - proposedStart) / 3600000 : 10; // default 10h if unknown
+
         const available = DRIVERS.filter((d) => {
           if (usedAsBackup.has(d.id)) return false;
           if (d.id === truck.primaryDriver || d.id === truck.secondaryDriver) return false;
           // In CSV mode, filter out drivers already at max blocks
           if (csvRows && d.blockCount >= MAX_BLOCKS_PER_WEEK) return false;
-          // Filter out drivers with < 4 hours duty remaining (legally insufficient)
+
+          // RULE 1: Exclude drivers with < 34h cycle remaining
+          if (csvRows && d.cycleRemaining < MIN_CYCLE_FOR_BACKUP) return false;
+
+          // RULE 2: Exclude drivers already executing a block during the proposed backup window
+          if (csvRows && proposedStart && proposedEnd && d.blocks) {
+            for (const blk of d.blocks) {
+              const blkStart = parseBlockDateMs(blk.blockStart);
+              const blkEnd = parseBlockDateMs(blk.blockEnd);
+              if (blocksOverlap(proposedStart, proposedEnd, blkStart, blkEnd)) {
+                return false; // driver is busy during this time
+              }
+            }
+          }
+
+          // Filter out drivers with < 4 hours duty remaining (ELD)
           if (samsaraConnected && d.hosDutyRemaining !== undefined && d.hosDutyRemaining < 240) return false;
           for (const bk of Object.keys(cancelledBlocks)) {
             if (!cancelledBlocks[bk]) continue;
@@ -1577,6 +1631,7 @@
                             background: isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
                             borderLeft: isSel ? `3px solid ${B.red}` : "3px solid transparent",
                             opacity: isMaxed && !isSel ? 0.6 : 1,
+                            position: "relative", overflow: "visible",
                           }}
                         >
                           {/* Col A: Driver number */}
@@ -1638,7 +1693,7 @@
                             const stageColor = blk.stage ? STAGE_COLORS[blk.stage] : null;
 
                             return (
-                              <div key={blk.blockId} style={{ width: 120, flexShrink: 0 }}>
+                              <div key={blk.blockId} style={{ width: 120, flexShrink: 0, position: "relative", zIndex: isAssigning ? 100 : 1 }}>
                                 <BlockNode
                                   label={blk.blockId.slice(0, 8)}
                                   driverLabel=""
