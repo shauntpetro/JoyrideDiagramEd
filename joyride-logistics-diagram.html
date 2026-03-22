@@ -126,7 +126,7 @@
         const name = (row["Driver Name"] || "").trim();
         if (!name) return;
         if (!driverSet.has(name)) driverSet.set(name, nextDriverId++);
-        if (!driverStats[name]) driverStats[name] = { totalMiles: 0, tripCount: 0, facilities: new Set(), blockIds: new Set(), workTypes: new Set() };
+        if (!driverStats[name]) driverStats[name] = { totalMiles: 0, tripCount: 0, facilities: new Set(), blockIds: new Set(), workTypes: new Set(), startHours: [] };
         const s = driverStats[name];
         s.tripCount++;
         const dist = parseFloat(row["Estimate Distance"]) || 0;
@@ -139,11 +139,61 @@
         if (blockId) s.blockIds.add(blockId);
         const shipper = (row["Shipper Account"] || "").trim();
         if (shipper) s.workTypes.add(shipper);
+        // Collect trip start times for preference analysis
+        const startTime = (row["Stop 1 Planned Arrival Time"] || "").trim();
+        if (startTime) {
+          const [hr, min] = startTime.split(":").map(Number);
+          if (!isNaN(hr)) s.startHours.push(hr + (min || 0) / 60);
+        }
       });
 
       // Estimate weekly hours: assume avg 45mph, so hours ≈ miles/45
+      // Compute preferred start time profile per driver
       Object.values(driverStats).forEach(s => {
         s.estWeeklyHours = Math.round((s.totalMiles / 45) * 10) / 10;
+
+        // Start time preference analysis
+        const hours = s.startHours;
+        if (hours.length > 0) {
+          // Average start hour
+          const avgHour = hours.reduce((a, b) => a + b, 0) / hours.length;
+          s.avgStartHour = Math.round(avgHour * 10) / 10;
+
+          // Most common start hour (mode, rounded to nearest hour)
+          const hourBuckets = {};
+          hours.forEach(h => {
+            const bucket = Math.round(h);
+            hourBuckets[bucket] = (hourBuckets[bucket] || 0) + 1;
+          });
+          const modeHour = parseInt(Object.entries(hourBuckets).sort((a, b) => b[1] - a[1])[0][0], 10);
+          s.modeStartHour = modeHour;
+
+          // Preferred shift: early AM (4-10), midday (10-15), evening (15-21), overnight (21-4)
+          const amCount = hours.filter(h => h >= 4 && h < 10).length;
+          const midCount = hours.filter(h => h >= 10 && h < 15).length;
+          const pmCount = hours.filter(h => h >= 15 && h < 21).length;
+          const nightCount = hours.filter(h => h >= 21 || h < 4).length;
+          const shifts = [
+            { label: "AM", count: amCount },
+            { label: "MID", count: midCount },
+            { label: "PM", count: pmCount },
+            { label: "NIGHT", count: nightCount },
+          ];
+          const preferred = shifts.sort((a, b) => b.count - a.count)[0];
+          s.preferredShift = preferred.label;
+          s.shiftConsistency = Math.round((preferred.count / hours.length) * 100); // % of starts in preferred window
+
+          // Formatted preferred start time
+          const fmtH = modeHour % 12 || 12;
+          const fmtAmPm = modeHour >= 12 ? "pm" : "am";
+          s.preferredStartLabel = `${fmtH}${fmtAmPm}`;
+        } else {
+          s.avgStartHour = null;
+          s.modeStartHour = null;
+          s.preferredShift = null;
+          s.shiftConsistency = 0;
+          s.preferredStartLabel = null;
+        }
       });
 
       // ── Step 2: Group by Operator ID (= seat/load) ──
@@ -350,6 +400,12 @@
           domicile: dom,
           driverNumber: driverNum,
           blocks: driverBlocksMap[dId] || [],
+          // Preferred start time profile
+          avgStartHour: s.avgStartHour,
+          modeStartHour: s.modeStartHour,
+          preferredShift: s.preferredShift,
+          shiftConsistency: s.shiftConsistency || 0,
+          preferredStartLabel: s.preferredStartLabel,
         };
       });
 
@@ -1668,6 +1724,12 @@
                       const isBkp = isDriverBackup(d.id);
                       const isMaxed = d.blockCount >= MAX_BLOCKS_PER_WEEK;
                       const driverBlocks = d.blocks || [];
+                      const rowHasAssigning = assigningBlock && driverBlocks.some((blk, bIdx) => {
+                        const truck = TRUCKS.find(t => t.id === blk.truckId);
+                        const blockIndex = truck?.blockIds?.indexOf(blk.blockId);
+                        const bn = blockIndex !== undefined && blockIndex >= 0 ? blockIndex + 1 : bIdx + 1;
+                        return blockKey(blk.truckId, bn) === assigningBlock;
+                      });
 
                       return (
                         <div
@@ -1686,7 +1748,7 @@
                             background: isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
                             borderLeft: isSel ? `3px solid ${B.red}` : "3px solid transparent",
                             opacity: isMaxed && !isSel ? 0.6 : 1,
-                            position: "relative", overflow: "visible",
+                            position: "relative", overflow: "visible", zIndex: rowHasAssigning ? 100 : 1,
                           }}
                         >
                           {/* Col A: Driver number */}
@@ -1706,6 +1768,16 @@
                                 }} />
                               )}
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                              {d.preferredStartLabel && (
+                                <span style={{
+                                  fontSize: 7, fontWeight: 700, flexShrink: 0,
+                                  padding: "1px 4px", borderRadius: 3, letterSpacing: 0.3,
+                                  background: d.preferredShift === "AM" ? "rgba(100,181,246,0.12)" : d.preferredShift === "PM" ? "rgba(255,213,79,0.12)" : d.preferredShift === "NIGHT" ? "rgba(186,104,200,0.12)" : "rgba(255,255,255,0.06)",
+                                  color: d.preferredShift === "AM" ? "#64b5f6" : d.preferredShift === "PM" ? B.gold : d.preferredShift === "NIGHT" ? B.bkpL : B.dim,
+                                }}>
+                                  {d.preferredStartLabel}
+                                </span>
+                              )}
                             </div>
                             <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
                               <div style={{ width: 40, height: 3, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
@@ -2229,6 +2301,17 @@
                       </div>
                       <div style={{ fontSize: 9, color: B.dim }}>Backup Status</div>
                     </div>
+                    {selectedDriverInfo.preferredStartLabel && (
+                      <div style={{ textAlign: "center" }}>
+                        <div style={{
+                          fontSize: 16, fontWeight: 700,
+                          color: selectedDriverInfo.preferredShift === "AM" ? "#64b5f6" : selectedDriverInfo.preferredShift === "PM" ? B.gold : selectedDriverInfo.preferredShift === "NIGHT" ? B.bkpL : B.dim,
+                        }}>
+                          {selectedDriverInfo.preferredStartLabel}
+                        </div>
+                        <div style={{ fontSize: 9, color: B.dim }}>Pref Start ({selectedDriverInfo.shiftConsistency}%)</div>
+                      </div>
+                    )}
                     {selectedDriverInfo.hosSource && selectedDriverInfo.hosStatus && (
                       <div style={{ textAlign: "center" }}>
                         <div style={{
