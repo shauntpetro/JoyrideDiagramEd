@@ -1806,6 +1806,13 @@
                         const bn = blockIndex !== undefined && blockIndex >= 0 ? blockIndex + 1 : bIdx + 1;
                         return blockKey(blk.truckId, bn) === assigningBlock;
                       });
+                      const rowHasCancelled = allBlocks.some((blk) => {
+                        const truck = TRUCKS.find(t => t.id === blk.truckId);
+                        const blockIndex = truck?.blockIds?.indexOf(blk.blockId);
+                        const bn = blockIndex !== undefined && blockIndex >= 0 ? blockIndex + 1 : 0;
+                        return bn > 0 && !!cancelledBlocks[blockKey(blk.truckId, bn)] && !blockBackups[blockKey(blk.truckId, bn)];
+                      });
+                      const rowActive = rowHasAssigning || rowHasCancelled;
 
                       return (
                         <div
@@ -1821,9 +1828,9 @@
                           style={{
                             display: "flex", alignItems: "center", gap: 0, padding: "6px 0",
                             cursor: "pointer", borderRadius: 6, transition: "all 0.15s",
-                            background: isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
-                            borderLeft: isSel ? `3px solid ${B.red}` : "3px solid transparent",
-                            opacity: isMaxed && !isSel ? 0.85 : 1,
+                            background: rowActive ? "rgba(193,59,64,0.10)" : isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
+                            borderLeft: rowActive ? `3px solid ${B.cancelRed}` : isSel ? `3px solid ${B.red}` : "3px solid transparent",
+                            opacity: (rowActive || isSel) ? 1 : isMaxed ? 0.85 : 1,
                             position: "relative", overflow: "visible", zIndex: rowHasAssigning ? 100 : "auto",
                           }}
                         >
