@@ -699,9 +699,22 @@
     }
 
     // ─── Enrich Drivers with HOS Data ─────────────────────────
-    function enrichWithHOS(drivers, hosData, matchMap) {
+    function enrichWithHOS(drivers, hosData, matchMap, locationData) {
       if (!hosData || !hosData.data) return drivers;
       const hosDrivers = hosData.data;
+      // Build vehicle location lookup
+      const vehicleLocations = {};
+      if (locationData?.data) {
+        locationData.data.forEach(v => {
+          if (v.location) {
+            const loc = v.location;
+            const label = loc.reverseGeo?.formattedLocation || `${(loc.latitude || 0).toFixed(2)}, ${(loc.longitude || 0).toFixed(2)}`;
+            // Map by vehicle ID — we'll match to drivers via their assigned vehicle
+            if (v.id) vehicleLocations[v.id] = label;
+            if (v.name) vehicleLocations[v.name] = label;
+          }
+        });
+      }
 
       return drivers.map(d => {
         const samsaraId = matchMap[d.id];
@@ -744,6 +757,8 @@
           cycleRemaining: cycleRemainingMin !== null ? Math.round(cycleRemainingMin / 6) / 10 : d.cycleRemaining, // minutes → hours
           estWeeklyHours: realWeeklyHours, // Override CSV estimate with real data
           hosSource: "samsara",
+          // Location from Samsara (via driver's assigned vehicle)
+          currentLocation: hosEntry.driver?.vehicleId ? (vehicleLocations[hosEntry.driver.vehicleId] || null) : null,
         };
       });
     }
@@ -975,7 +990,10 @@
                         </div>
                       )}
                     </div>
-                    <span style={{ fontSize: 8, color: B.dim, flexShrink: 0 }}>{d.homeTruckLabel || (d.homeTruck ? `L${d.homeTruck}` : "")}</span>
+                    <div style={{ flexShrink: 0, textAlign: "right" }}>
+                      <div style={{ fontSize: 8, color: B.dim }}>{d.homeTruckLabel || (d.homeTruck ? `L${d.homeTruck}` : "")}</div>
+                      {d.currentLocation && <div style={{ fontSize: 6, color: B.subtle, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📍 {d.currentLocation}</div>}
+                    </div>
                   </div>
                 );})}
               </div>
@@ -1207,7 +1225,7 @@
       const data = csvRows ? transformCSVData(csvRows, csvRegion, savedProfiles) : buildData(MODELS[mode]);
       // Enrich with Samsara HOS data if connected
       if (samsaraConnected && samsaraHOS && csvRows) {
-        data.drivers = enrichWithHOS(data.drivers, samsaraHOS, driverMatchMap);
+        data.drivers = enrichWithHOS(data.drivers, samsaraHOS, driverMatchMap, samsaraLocations);
       }
       const { drivers: DRIVERS, trucks: TRUCKS, blocksPerLoad, hasPrimarySecondary } = data;
       const BLOCK_NUMS = Array.from({ length: blocksPerLoad }, (_, i) => i + 1);
@@ -2014,6 +2032,11 @@
                               {isMaxed && <span style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
                               {isBkp && <span style={{ fontSize: 7, color: B.bkpL, fontWeight: 600 }}>BKP</span>}
                             </div>
+                            {d.currentLocation && (
+                              <div style={{ fontSize: 7, color: B.dim, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                📍 {d.currentLocation}
+                              </div>
+                            )}
                           </div>
 
                           {/* Status column */}
@@ -2494,7 +2517,10 @@
                     {selectedDriverInfo.label}
                   </h4>
                   <p style={{ margin: "2px 0 0", fontSize: 11, color: B.muted }}>
-                    Click a driver to see their assigned loads and blocks. Click again to deselect.
+                    {selectedDriverInfo.currentLocation
+                      ? `📍 ${selectedDriverInfo.currentLocation}`
+                      : "Click a driver to see their assigned loads and blocks. Click again to deselect."
+                    }
                   </p>
                 </div>
                 {csvRows && (
