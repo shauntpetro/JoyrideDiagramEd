@@ -2006,7 +2006,7 @@
               {/* Column headers */}
               <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "6px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 4 }}>
                 <div style={{ width: 36, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center" }}>#</div>
-                <div style={{ width: 200, fontSize: 8, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
+                <div style={{ width: 280, fontSize: 8, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
                 <div style={{ width: 70, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Status</div>
                 {[1, 2, 3].map(n => (
                   <div key={n} style={{ width: 120, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
@@ -2121,7 +2121,7 @@
                           onMouseEnter={() => setHoveredDriver(d.id)}
                           onMouseLeave={() => setHoveredDriver(null)}
                           style={{
-                            display: "flex", alignItems: "center", gap: 0, padding: "6px 0",
+                            display: "flex", alignItems: "center", gap: 0, padding: "10px 0",
                             cursor: "pointer", borderRadius: 6, transition: "all 0.15s",
                             background: rowActive ? "rgba(193,59,64,0.10)" : isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
                             borderLeft: rowActive ? `3px solid ${B.cancelRed}` : isSel ? `3px solid ${B.red}` : "3px solid transparent",
@@ -2135,7 +2135,7 @@
                           </div>
 
                           {/* Col B: Driver name + stats */}
-                          <div style={{ width: 200, minWidth: 0, flexShrink: 0, paddingRight: 8 }}>
+                          <div style={{ width: 280, minWidth: 0, flexShrink: 0, paddingRight: 10 }}>
                             <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: isMaxed ? B.dim : B.text }}>
                               {d.hosSource && d.hosStatus && (
                                 <span style={{
@@ -2172,27 +2172,31 @@
                               <span style={{ fontSize: 8, color: d.blockCount >= 3 ? B.cancelRed : B.dim, fontWeight: d.blockCount >= 3 ? 700 : 400 }}>
                                 {d.blockCount}/3
                               </span>
-                              <span style={{ fontSize: 7, fontWeight: 600, color: d.cycleRemaining > 30 ? B.greenL : d.cycleRemaining > 10 ? B.gold : B.cancelRed }}>
+                              <span style={{ fontSize: 8, fontWeight: 600, color: d.cycleRemaining > 30 ? B.greenL : d.cycleRemaining > 10 ? B.gold : B.cancelRed }}>
                                 {d.hosSource ? (d.hosCycleRemainingFmt || `${d.cycleRemaining}h`) : `${d.cycleRemaining}h`} cyc
                               </span>
-                              {d.hosSource && d.hosDutyRemainingFmt && (
-                                <span style={{ fontSize: 7, color: (d.hosDutyRemaining || 0) > 480 ? B.greenL : (d.hosDutyRemaining || 0) > 240 ? B.gold : B.cancelRed }}>
-                                  · {d.hosDutyRemainingFmt} shift
-                                </span>
-                              )}
-                              {d.hosSource && d.hosDriveRemainingFmt && (
-                                <span style={{ fontSize: 7, color: B.dim }}>
-                                  · {d.hosDriveRemainingFmt} drive
-                                </span>
-                              )}
-                              <span style={{ fontSize: 7, color: B.dim }}>
-                                · {d.tripCount}t
-                              </span>
-                              {isMaxed && <span style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
-                              {isBkp && <span style={{ fontSize: 7, color: B.bkpL, fontWeight: 600 }}>BKP</span>}
+                              <span style={{ fontSize: 8, color: B.dim }}>· {d.tripCount}t</span>
+                              {isMaxed && <span style={{ fontSize: 8, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
+                              {isBkp && <span style={{ fontSize: 8, color: B.bkpL, fontWeight: 600 }}>BKP</span>}
                             </div>
+                            {/* Line 2: HOS shift/drive or location */}
+                            {d.hosSource && (d.hosDutyRemainingFmt || d.hosDriveRemainingFmt) && (
+                              <div style={{ display: "flex", alignItems: "center", gap: 4, marginTop: 2 }}>
+                                {d.hosDutyRemainingFmt && (
+                                  <span style={{ fontSize: 7, color: (d.hosDutyRemaining || 0) > 480 ? B.greenL : (d.hosDutyRemaining || 0) > 240 ? B.gold : B.cancelRed }}>
+                                    {d.hosDutyRemainingFmt} shift
+                                  </span>
+                                )}
+                                {d.hosDriveRemainingFmt && (
+                                  <span style={{ fontSize: 7, color: B.dim }}>· {d.hosDriveRemainingFmt} drive</span>
+                                )}
+                                {d.hosBreakRemainingFmt && (
+                                  <span style={{ fontSize: 7, color: B.dim }}>· {d.hosBreakRemainingFmt} break</span>
+                                )}
+                              </div>
+                            )}
                             {d.currentLocation && (
-                              <div style={{ fontSize: 7, color: B.dim, marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              <div style={{ fontSize: 7, color: B.subtle, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                 📍 {d.currentLocation}
                               </div>
                             )}
