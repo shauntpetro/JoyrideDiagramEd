@@ -1742,7 +1742,41 @@
                       const isBkp = isDriverBackup(d.id);
                       const isMaxed = d.blockCount >= MAX_BLOCKS_PER_WEEK;
                       const driverBlocks = d.blocks || [];
-                      const rowHasAssigning = assigningBlock && driverBlocks.some((blk, bIdx) => {
+                      // Collect blocks this driver has been assigned as backup for
+                      const backupBlocks = [];
+                      Object.entries(blockBackups).forEach(([key, backupDriverId]) => {
+                        if (backupDriverId !== d.id) return;
+                        const [tid, bn] = key.split("-").map(Number);
+                        const truck = TRUCKS.find(t => t.id === tid);
+                        if (!truck) return;
+                        const blockId = truck.blockIds?.[bn - 1];
+                        if (!blockId) return;
+                        const trips = truck.blockTrips?.[blockId] || [];
+                        let blkStart = null, blkEnd = null;
+                        trips.forEach(t => {
+                          if (t.stop1ArrDate && t.stop1ArrTime) {
+                            const dt = `${t.stop1ArrDate} ${t.stop1ArrTime}`;
+                            if (!blkStart || dt < blkStart) blkStart = dt;
+                          }
+                          if (t.stop2ArrDate && t.stop2ArrTime) {
+                            const dt = `${t.stop2ArrDate} ${t.stop2ArrTime}`;
+                            if (!blkEnd || dt > blkEnd) blkEnd = dt;
+                          }
+                        });
+                        const stages = trips.map(t => t.stage).filter(Boolean);
+                        const dominantStage = stages.length > 0
+                          ? Object.entries(stages.reduce((acc, s) => { acc[s] = (acc[s] || 0) + 1; return acc; }, {})).sort((a, b) => b[1] - a[1])[0]?.[0]
+                          : null;
+                        backupBlocks.push({
+                          blockId, truckId: tid, truckLabel: truck.operatorId,
+                          trips, stage: dominantStage,
+                          totalMiles: Math.round(trips.reduce((s, t) => s + t.distance, 0)),
+                          blockStart: blkStart, blockEnd: blkEnd,
+                          isBackupBlock: true, originalKey: key, blockNum: bn,
+                        });
+                      });
+                      const allBlocks = [...driverBlocks, ...backupBlocks];
+                      const rowHasAssigning = assigningBlock && allBlocks.some((blk, bIdx) => {
                         const truck = TRUCKS.find(t => t.id === blk.truckId);
                         const blockIndex = truck?.blockIds?.indexOf(blk.blockId);
                         const bn = blockIndex !== undefined && blockIndex >= 0 ? blockIndex + 1 : bIdx + 1;
@@ -1857,11 +1891,13 @@
                           </div>
 
                           {/* Cols C, D, E: Driver's blocks */}
-                          {driverBlocks.map((blk, bIdx) => {
-                            // Find the truck/seat this block belongs to
+                          {allBlocks.map((blk, bIdx) => {
+                            // For backup blocks, use the stored key; for own blocks, compute it
                             const truck = TRUCKS.find(t => t.id === blk.truckId);
-                            const blockIndex = truck?.blockIds?.indexOf(blk.blockId);
-                            const bn = blockIndex !== undefined && blockIndex >= 0 ? blockIndex + 1 : bIdx + 1;
+                            const bn = blk.isBackupBlock ? blk.blockNum : (() => {
+                              const blockIndex = truck?.blockIds?.indexOf(blk.blockId);
+                              return blockIndex !== undefined && blockIndex >= 0 ? blockIndex + 1 : bIdx + 1;
+                            })();
                             const key = blockKey(blk.truckId, bn);
                             const isCancelled = !!cancelledBlocks[key];
                             const backup = blockBackups[key];
@@ -1870,7 +1906,27 @@
                             const stageColor = blk.stage ? STAGE_COLORS[blk.stage] : null;
 
                             return (
-                              <div key={blk.blockId} style={{ width: 120, flexShrink: 0, position: "relative", zIndex: isAssigning ? 100 : 1 }}>
+                              <div key={`${blk.blockId}-${blk.isBackupBlock ? 'bkp' : 'own'}`} style={{ width: 120, flexShrink: 0, position: "relative", zIndex: isAssigning ? 100 : 1 }}>
+                                {blk.isBackupBlock ? (
+                                  // Backup block — show with purple accent, non-cancellable
+                                  <div style={{
+                                    width: "100%", background: B.bkpBg,
+                                    border: `2px solid rgba(186,104,200,0.4)`,
+                                    borderTop: stageColor ? `3px solid ${stageColor}` : undefined,
+                                    borderRadius: 10, padding: "8px 5px", textAlign: "center",
+                                  }}>
+                                    <div style={{ fontSize: 9, fontWeight: 700, color: B.bkpL, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      {blk.blockId.slice(0, 8)}
+                                    </div>
+                                    <div style={{ fontSize: 7, color: B.bkpL, fontWeight: 600, marginTop: 2 }}>BKP</div>
+                                    {blk.blockStart && (
+                                      <div style={{ fontSize: 7, color: B.dim, marginTop: 2, lineHeight: 1.3 }}>
+                                        <div style={{ color: B.greenL }}>{formatBlockTime(blk.blockStart)}</div>
+                                        <div style={{ color: B.gold }}>{formatBlockTime(blk.blockEnd)}</div>
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : (
                                 <BlockNode
                                   label={blk.blockId.slice(0, 8)}
                                   driverLabel=""
@@ -1893,12 +1949,13 @@
                                   onDrop={() => dropBlock(blk.truckId, bn)}
                                   onUndrop={() => undropBlock(blk.truckId, bn)}
                                 />
+                                )}
                               </div>
                             );
                           })}
 
                           {/* Empty block slots */}
-                          {Array.from({ length: Math.max(0, 3 - driverBlocks.length) }).map((_, i) => (
+                          {Array.from({ length: Math.max(0, 3 - allBlocks.length) }).map((_, i) => (
                             <div key={`empty-${i}`} style={{ width: 120, flexShrink: 0 }}>
                               <div style={{
                                 width: "100%", height: 42, borderRadius: 8,
