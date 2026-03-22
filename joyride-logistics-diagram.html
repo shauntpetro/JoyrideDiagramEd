@@ -721,7 +721,7 @@
           if (v.serial) vehicleLocations[v.serial] = label;
           if (v.externalIds) Object.values(v.externalIds).forEach(eid => { vehicleLocations[eid] = label; });
           // If vehicle has a driver assignment, map directly
-          const assignedDriver = v.staticAssignedDriver?.name || v.driver?.name;
+          const assignedDriver = v.staticAssignedDriver?.name || v.driver?.name || v._assignedDriverName;
           if (assignedDriver) vehicleDriverMap[assignedDriver.toLowerCase().trim()] = label;
         });
       }
@@ -736,22 +736,16 @@
         // Samsara HOS clocks — try multiple possible field paths
         const clocks = hosEntry.clocks || hosEntry;
 
-        // Drive remaining: try multiple API response formats
-        const driveRemainingMs = clocks.driveRemaining?.timeRemainingMs
-          ?? clocks.driveRemaining?.durationMs
-          ?? clocks.drive?.timeRemainingMs ?? null;
-        // Shift/duty remaining
-        const dutyRemainingMs = clocks.shiftRemaining?.timeRemainingMs
-          ?? clocks.shiftRemaining?.durationMs
-          ?? clocks.shift?.timeRemainingMs ?? null;
-        // Cycle remaining
-        const cycleRemainingMs = clocks.cycleRemaining?.timeRemainingMs
-          ?? clocks.cycleRemaining?.durationMs
-          ?? clocks.cycle?.timeRemainingMs ?? null;
-        // Time until break
-        const breakRemainingMs = clocks.timeUntilBreak?.timeRemainingMs
-          ?? clocks.timeUntilBreak?.durationMs
-          ?? clocks.break?.timeRemainingMs ?? null;
+        // Samsara field names: clocks.drive.driveRemainingDurationMs, etc.
+        const driveRemainingMs = clocks.drive?.driveRemainingDurationMs
+          ?? clocks.drive?.timeRemainingMs ?? clocks.driveRemaining?.timeRemainingMs ?? null;
+        const dutyRemainingMs = clocks.shift?.shiftRemainingDurationMs
+          ?? clocks.shift?.timeRemainingMs ?? clocks.shiftRemaining?.timeRemainingMs ?? null;
+        const cycleRemainingMs = clocks.cycle?.cycleRemainingDurationMs
+          ?? clocks.cycle?.timeRemainingMs ?? clocks.cycleRemaining?.timeRemainingMs ?? null;
+        const breakRemainingMs = clocks.break?.timeUntilBreakDurationMs
+          ?? clocks.break?.timeRemainingMs ?? clocks.timeUntilBreak?.timeRemainingMs ?? null;
+        const cycleTomorrowMs = clocks.cycle?.cycleTomorrowDurationMs ?? null;
 
         const driveRemainingMin = driveRemainingMs !== null ? Math.round(driveRemainingMs / 60000) : null;
         const dutyRemainingMin = dutyRemainingMs !== null ? Math.round(dutyRemainingMs / 60000) : null;
@@ -1146,6 +1140,22 @@
           ]);
           setSamsaraDrivers(driversRes);
           setSamsaraHOS(hosRes);
+          // Enrich location data with driver→vehicle mapping from the drivers list
+          if (locRes && driversRes?.data) {
+            // Build vehicleId→driverName from staticAssignedVehicle
+            const driverVehicleMap = {};
+            driversRes.data.forEach(drv => {
+              if (drv.staticAssignedVehicle?.id) {
+                driverVehicleMap[drv.staticAssignedVehicle.id] = drv.name;
+              }
+            });
+            // Add driver name to each vehicle location
+            if (locRes.data) {
+              locRes.data.forEach(v => {
+                if (driverVehicleMap[v.id]) v._assignedDriverName = driverVehicleMap[v.id];
+              });
+            }
+          }
           if (locRes) setSamsaraLocations(locRes);
           return { drivers: driversRes, hos: hosRes, locations: locRes };
         } catch (e) {
