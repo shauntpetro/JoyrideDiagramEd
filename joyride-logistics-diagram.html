@@ -126,7 +126,7 @@
         const name = (row["Driver Name"] || "").trim();
         if (!name) return;
         if (!driverSet.has(name)) driverSet.set(name, nextDriverId++);
-        if (!driverStats[name]) driverStats[name] = { totalMiles: 0, tripCount: 0, facilities: new Set(), blockIds: new Set(), workTypes: new Set(), startHours: [] };
+        if (!driverStats[name]) driverStats[name] = { totalMiles: 0, tripCount: 0, facilities: new Set(), blockIds: new Set(), workTypes: new Set() };
         const s = driverStats[name];
         s.tripCount++;
         const dist = parseFloat(row["Estimate Distance"]) || 0;
@@ -139,61 +139,11 @@
         if (blockId) s.blockIds.add(blockId);
         const shipper = (row["Shipper Account"] || "").trim();
         if (shipper) s.workTypes.add(shipper);
-        // Collect trip start times for preference analysis
-        const startTime = (row["Stop 1 Planned Arrival Time"] || "").trim();
-        if (startTime) {
-          const [hr, min] = startTime.split(":").map(Number);
-          if (!isNaN(hr)) s.startHours.push(hr + (min || 0) / 60);
-        }
       });
 
-      // Estimate weekly hours: assume avg 45mph, so hours ≈ miles/45
-      // Compute preferred start time profile per driver
+      // Estimate weekly hours
       Object.values(driverStats).forEach(s => {
         s.estWeeklyHours = Math.round((s.totalMiles / 45) * 10) / 10;
-
-        // Start time preference analysis
-        const hours = s.startHours;
-        if (hours.length > 0) {
-          // Average start hour
-          const avgHour = hours.reduce((a, b) => a + b, 0) / hours.length;
-          s.avgStartHour = Math.round(avgHour * 10) / 10;
-
-          // Most common start hour (mode, rounded to nearest hour)
-          const hourBuckets = {};
-          hours.forEach(h => {
-            const bucket = Math.round(h);
-            hourBuckets[bucket] = (hourBuckets[bucket] || 0) + 1;
-          });
-          const modeHour = parseInt(Object.entries(hourBuckets).sort((a, b) => b[1] - a[1])[0][0], 10);
-          s.modeStartHour = modeHour;
-
-          // Preferred shift: early AM (4-10), midday (10-15), evening (15-21), overnight (21-4)
-          const amCount = hours.filter(h => h >= 4 && h < 10).length;
-          const midCount = hours.filter(h => h >= 10 && h < 15).length;
-          const pmCount = hours.filter(h => h >= 15 && h < 21).length;
-          const nightCount = hours.filter(h => h >= 21 || h < 4).length;
-          const shifts = [
-            { label: "AM", count: amCount },
-            { label: "MID", count: midCount },
-            { label: "PM", count: pmCount },
-            { label: "NIGHT", count: nightCount },
-          ];
-          const preferred = shifts.sort((a, b) => b.count - a.count)[0];
-          s.preferredShift = preferred.label;
-          s.shiftConsistency = Math.round((preferred.count / hours.length) * 100); // % of starts in preferred window
-
-          // Formatted preferred start time
-          const fmtH = modeHour % 12 || 12;
-          const fmtAmPm = modeHour >= 12 ? "pm" : "am";
-          s.preferredStartLabel = `${fmtH}${fmtAmPm}`;
-        } else {
-          s.avgStartHour = null;
-          s.modeStartHour = null;
-          s.preferredShift = null;
-          s.shiftConsistency = 0;
-          s.preferredStartLabel = null;
-        }
       });
 
       // ── Step 2: Group by Operator ID (= seat/load) ──
@@ -366,6 +316,78 @@
         driverScheduledHours[driverId] = Math.round(totalHrs * 10) / 10;
       });
 
+      // ── Step 6: Preferred start time analysis (from block start times) ──
+      const driverStartPrefs = {}; // driverId → { preferredStartLabel, preferredShift, shiftConsistency, ... }
+      Object.entries(driverBlocksMap).forEach(([driverId, blocks]) => {
+        // Extract the hour-of-day from each block's start time
+        const blockStartHours = [];
+        blocks.forEach(blk => {
+          if (!blk.blockStart) return;
+          const parts = blk.blockStart.split(" ");
+          if (parts.length < 2) return;
+          const [hr, min] = parts[1].split(":").map(Number);
+          if (!isNaN(hr)) blockStartHours.push(hr + (min || 0) / 60);
+        });
+
+        if (blockStartHours.length === 0) {
+          driverStartPrefs[driverId] = { avgStartHour: null, modeStartHour: null, preferredShift: null, shiftConsistency: 0, preferredStartLabel: null };
+          return;
+        }
+
+        // Group into 2-hour windows and find the most common cluster
+        const windows = {}; // windowStart → { count, hours[] }
+        blockStartHours.forEach(h => {
+          // Round down to nearest 2-hour window (0-2, 2-4, 4-6, ..., 22-24)
+          const windowStart = Math.floor(h / 2) * 2;
+          if (!windows[windowStart]) windows[windowStart] = { count: 0, hours: [] };
+          windows[windowStart].count++;
+          windows[windowStart].hours.push(h);
+        });
+
+        // Find the top window
+        const sortedWindows = Object.entries(windows).sort((a, b) => b[1].count - a[1].count);
+        const topWindow = sortedWindows[0];
+        const topWindowStart = parseInt(topWindow[0], 10);
+        const topWindowHours = topWindow[1].hours;
+
+        // Average within the top window for precise preferred time
+        const avgInWindow = topWindowHours.reduce((a, b) => a + b, 0) / topWindowHours.length;
+        const roundedHour = Math.round(avgInWindow);
+
+        // Shift classification
+        const amCount = blockStartHours.filter(h => h >= 4 && h < 10).length;
+        const midCount = blockStartHours.filter(h => h >= 10 && h < 15).length;
+        const pmCount = blockStartHours.filter(h => h >= 15 && h < 21).length;
+        const nightCount = blockStartHours.filter(h => h >= 21 || h < 4).length;
+        const shifts = [
+          { label: "AM", count: amCount },
+          { label: "MID", count: midCount },
+          { label: "PM", count: pmCount },
+          { label: "NIGHT", count: nightCount },
+        ].sort((a, b) => b.count - a.count);
+        const preferredShift = shifts[0].label;
+        const shiftConsistency = Math.round((shifts[0].count / blockStartHours.length) * 100);
+
+        // Format label — show the average start time in the preferred window
+        const displayHr = roundedHour % 12 || 12;
+        const displayAmPm = roundedHour >= 12 ? "pm" : "am";
+        // Also show minutes if the average isn't on the hour
+        const avgMin = Math.round((avgInWindow - Math.floor(avgInWindow)) * 60);
+        const preferredStartLabel = avgMin > 5 && avgMin < 55
+          ? `${displayHr}:${avgMin.toString().padStart(2, "0")}${displayAmPm}`
+          : `${displayHr}${displayAmPm}`;
+
+        driverStartPrefs[driverId] = {
+          avgStartHour: Math.round(avgInWindow * 10) / 10,
+          modeStartHour: roundedHour,
+          preferredShift,
+          shiftConsistency,
+          preferredStartLabel,
+          blockStartCount: blockStartHours.length,
+          windowRange: `${topWindowStart}:00-${topWindowStart + 2}:00`,
+        };
+      });
+
       // Number drivers within each domicile
       const domicileNumbers = {}; // region → counter
       const driversByDomicile = {}; // region → [driverName]
@@ -400,12 +422,8 @@
           domicile: dom,
           driverNumber: driverNum,
           blocks: driverBlocksMap[dId] || [],
-          // Preferred start time profile
-          avgStartHour: s.avgStartHour,
-          modeStartHour: s.modeStartHour,
-          preferredShift: s.preferredShift,
-          shiftConsistency: s.shiftConsistency || 0,
-          preferredStartLabel: s.preferredStartLabel,
+          // Preferred start time profile (derived from block start times)
+          ...(driverStartPrefs[dId] || { avgStartHour: null, modeStartHour: null, preferredShift: null, shiftConsistency: 0, preferredStartLabel: null }),
         };
       });
 
@@ -1748,7 +1766,7 @@
                             background: isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
                             borderLeft: isSel ? `3px solid ${B.red}` : "3px solid transparent",
                             opacity: isMaxed && !isSel ? 0.6 : 1,
-                            position: "relative", overflow: "visible", zIndex: rowHasAssigning ? 100 : 1,
+                            position: "relative", overflow: "visible", zIndex: rowHasAssigning ? 100 : "auto",
                           }}
                         >
                           {/* Col A: Driver number */}
