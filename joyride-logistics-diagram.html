@@ -894,7 +894,8 @@
       const [selectedTruck, setSelectedTruck] = useState(null);
       const [driverSearch, setDriverSearch] = useState("");
       const [selectedDriver, setSelectedDriver] = useState(null);
-      const [driverSort, setDriverSort] = useState("default"); // "default", "available", "name", "miles"
+      const [driverSort, setDriverSort] = useState("default");
+      const [pendingBackup, setPendingBackup] = useState(null); // { truckId, blockNum, driverId, driverName } // "default", "available", "name", "miles"
       const [showLines, setShowLines] = useState(true);
 
       // CSV state
@@ -1221,20 +1222,71 @@
         setAssigningBlock(null);
       };
 
-      const assignBlockBackup = (truckId, blockNum, driverId) => {
+      // Stage 1: User selects a backup driver → show confirmation
+      const requestBackupAssignment = (truckId, blockNum, driverId) => {
+        const driverName = getDriverName(driverId);
+        setPendingBackup({ truckId, blockNum, driverId, driverName });
+      };
+
+      // Stage 2: User confirms → actually assign the backup
+      const confirmBackupAssignment = () => {
+        if (!pendingBackup) return;
+        const { truckId, blockNum, driverId } = pendingBackup;
         const key = blockKey(truckId, blockNum);
         setBlockBackups((prev) => ({ ...prev, [key]: driverId }));
         setAssigningBlock(null);
+        setPendingBackup(null);
 
-        // Cascade: cancel the SAME block number on the backup driver's home load
-        const homeTruck = TRUCKS.find((t) => t.primaryDriver === driverId || t.secondaryDriver === driverId);
-        if (homeTruck && getOriginalDriver(homeTruck.id, blockNum) === driverId) {
-          const bk = blockKey(homeTruck.id, blockNum);
-          if (!cancelledBlocks[bk]) {
-            setCancelledBlocks((prev) => ({ ...prev, [bk]: true }));
-            setCascadeCancelled((prev) => ({ ...prev, [bk]: true }));
+        // Cascade: In CSV mode, find the backup driver's overlapping block and cancel it
+        if (csvRows) {
+          const driver = DRIVERS.find(d => d.id === driverId);
+          if (driver?.blocks) {
+            const truck = TRUCKS.find(t => t.id === truckId);
+            const proposedBlockId = truck?.blockIds?.[blockNum - 1];
+            const proposedTrips = proposedBlockId && truck.blockTrips?.[proposedBlockId];
+            let pStart = null, pEnd = null;
+            if (proposedTrips) {
+              proposedTrips.forEach(t => {
+                const s = parseBlockDateMs(t.stop1ArrDate && t.stop1ArrTime ? `${t.stop1ArrDate} ${t.stop1ArrTime}` : null);
+                const e = parseBlockDateMs(t.stop2ArrDate && t.stop2ArrTime ? `${t.stop2ArrDate} ${t.stop2ArrTime}` : null);
+                if (s !== null && (pStart === null || s < pStart)) pStart = s;
+                if (e !== null && (pEnd === null || e > pEnd)) pEnd = e;
+              });
+            }
+            // Cancel the backup driver's block that overlaps
+            for (const blk of driver.blocks) {
+              const blkStart = parseBlockDateMs(blk.blockStart);
+              const blkEnd = parseBlockDateMs(blk.blockEnd);
+              if (blocksOverlap(pStart, pEnd, blkStart, blkEnd)) {
+                const homeTruck = TRUCKS.find(t => t.id === blk.truckId);
+                if (homeTruck) {
+                  const bIdx = homeTruck.blockIds?.indexOf(blk.blockId);
+                  if (bIdx >= 0) {
+                    const bk = blockKey(homeTruck.id, bIdx + 1);
+                    if (!cancelledBlocks[bk]) {
+                      setCancelledBlocks((prev) => ({ ...prev, [bk]: true }));
+                      setCascadeCancelled((prev) => ({ ...prev, [bk]: true }));
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          // Demo mode: cascade by block number position
+          const homeTruck = TRUCKS.find((t) => t.primaryDriver === driverId || t.secondaryDriver === driverId);
+          if (homeTruck && getOriginalDriver(homeTruck.id, blockNum) === driverId) {
+            const bk = blockKey(homeTruck.id, blockNum);
+            if (!cancelledBlocks[bk]) {
+              setCancelledBlocks((prev) => ({ ...prev, [bk]: true }));
+              setCascadeCancelled((prev) => ({ ...prev, [bk]: true }));
+            }
           }
         }
+      };
+
+      const cancelPendingBackup = () => {
+        setPendingBackup(null);
       };
 
       const removeBlockBackup = (truckId, blockNum) => {
@@ -1299,9 +1351,11 @@
       useEffect(() => {
         const handleKey = (e) => {
           if (e.key === "Escape") {
+            if (pendingBackup) { setPendingBackup(null); return; }
             setSelectedDriver(null);
             setSelectedTruck(null);
             setAssigningBlock(null);
+            setPendingBackup(null);
             setHoveredDriver(null);
             setHoveredTruck(null);
           }
@@ -1575,6 +1629,7 @@
               <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "6px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 4 }}>
                 <div style={{ width: 36, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center" }}>#</div>
                 <div style={{ width: 200, fontSize: 8, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
+                <div style={{ width: 70, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Status</div>
                 {[1, 2, 3].map(n => (
                   <div key={n} style={{ width: 120, fontSize: 8, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
                 ))}
@@ -1679,6 +1734,38 @@
                             </div>
                           </div>
 
+                          {/* Status column */}
+                          <div style={{ width: 70, flexShrink: 0, textAlign: "center" }}>
+                            {d.hosSource && d.hosStatus ? (
+                              <div style={{
+                                display: "inline-flex", alignItems: "center", gap: 3,
+                                padding: "2px 6px", borderRadius: 4, fontSize: 7, fontWeight: 700,
+                                textTransform: "uppercase", letterSpacing: 0.3,
+                                background: d.hosStatus === "driving" ? B.greenBg
+                                  : d.hosStatus === "on_duty" ? B.goldBg
+                                  : d.hosStatus === "sleeper_berth" ? "rgba(100,181,246,0.10)"
+                                  : "rgba(255,255,255,0.04)",
+                                color: d.hosStatus === "driving" ? B.green
+                                  : d.hosStatus === "on_duty" ? B.gold
+                                  : d.hosStatus === "sleeper_berth" ? "#64b5f6"
+                                  : B.dim,
+                              }}>
+                                <span style={{
+                                  width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
+                                  background: d.hosStatus === "driving" ? B.green
+                                    : d.hosStatus === "on_duty" ? B.gold
+                                    : d.hosStatus === "sleeper_berth" ? "#64b5f6"
+                                    : "transparent",
+                                  border: d.hosStatus === "off_duty" ? `1px solid ${B.dim}` : "none",
+                                  boxShadow: d.hosStatus === "driving" ? `0 0 4px ${B.green}` : "none",
+                                }} />
+                                {d.hosStatus.replace("_", " ")}
+                              </div>
+                            ) : (
+                              <span style={{ fontSize: 7, color: B.dim }}>—</span>
+                            )}
+                          </div>
+
                           {/* Cols C, D, E: Driver's blocks */}
                           {driverBlocks.map((blk, bIdx) => {
                             // Find the truck/seat this block belongs to
@@ -1709,7 +1796,7 @@
                                   blockStart={blk.blockStart}
                                   blockEnd={blk.blockEnd}
                                   tooltip={`${blk.blockId}\nSeat: ${blk.truckLabel}\n${blk.trips.length} trips · ${blk.totalMiles} mi\n${blk.blockStart ? `Start: ${blk.blockStart}` : ""}\n${blk.blockEnd ? `End: ${blk.blockEnd}` : ""}\n${blk.trips.map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`}
-                                  availableBackups={available.map((ad) => ({ ...ad, onSelect: () => assignBlockBackup(blk.truckId, bn, ad.id) }))}
+                                  availableBackups={available.map((ad) => ({ ...ad, onSelect: () => requestBackupAssignment(blk.truckId, bn, ad.id) }))}
                                   onCancel={() => toggleBlockCancel(blk.truckId, bn)}
                                   onAssign={() => setAssigningBlock(isAssigning ? null : key)}
                                   onRemoveBackup={() => removeBlockBackup(blk.truckId, bn)}
@@ -2010,7 +2097,7 @@
                             tooltip={csvBlockId && load.blockTrips?.[csvBlockId]
                               ? `${csvBlockId}\n${load.blockTrips[csvBlockId].length} trips · ${Math.round(load.blockTrips[csvBlockId].reduce((s,t) => s + t.distance, 0))} mi\n${load.blockTrips[csvBlockId].map(t => `${t.stop1} → ${t.stop2}`).join('\n')}`
                               : null}
-                            availableBackups={available.map((d) => ({ ...d, onSelect: () => assignBlockBackup(load.id, bn, d.id) }))}
+                            availableBackups={available.map((d) => ({ ...d, onSelect: () => requestBackupAssignment(load.id, bn, d.id) }))}
                             onCancel={() => toggleBlockCancel(load.id, bn)}
                             onAssign={() => setAssigningBlock(isAssigning ? null : key)}
                             onRemoveBackup={() => removeBlockBackup(load.id, bn)}
@@ -2042,6 +2129,46 @@
               })}
             </div>
           </div>
+          )}
+
+          {/* Backup Confirmation Modal */}
+          {pendingBackup && (
+            <div style={{
+              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+              background: "rgba(0,0,0,0.5)", zIndex: 1000,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }} onClick={cancelPendingBackup}>
+              <div className="panel-enter" onClick={(e) => e.stopPropagation()} style={{
+                background: B.card, border: `2px solid ${B.bkp}`, borderRadius: 14, padding: 24,
+                minWidth: 320, maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
+              }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: B.bkpL, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12, textAlign: "center" }}>
+                  Confirm Backup Assignment
+                </div>
+                <div style={{ fontSize: 12, color: B.text, textAlign: "center", marginBottom: 6 }}>
+                  Assign <span style={{ color: B.bkpL, fontWeight: 700 }}>{pendingBackup.driverName}</span> as backup?
+                </div>
+                <div style={{ fontSize: 10, color: B.muted, textAlign: "center", marginBottom: 16 }}>
+                  {(() => {
+                    const truck = TRUCKS.find(t => t.id === pendingBackup.truckId);
+                    const blockId = truck?.blockIds?.[pendingBackup.blockNum - 1];
+                    return blockId ? `Block ${blockId.slice(0, 10)} on ${truck.operatorId || `Seat ${truck.id}`}` : "";
+                  })()}
+                </div>
+                <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+                  <button onClick={confirmBackupAssignment} style={{
+                    padding: "8px 24px", borderRadius: 8, border: "none", cursor: "pointer",
+                    background: B.bkp, color: "#fff", fontSize: 11, fontWeight: 700,
+                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase", letterSpacing: 0.5,
+                  }}>Confirm</button>
+                  <button onClick={cancelPendingBackup} style={{
+                    padding: "8px 24px", borderRadius: 8, border: `1px solid ${B.bdr}`, cursor: "pointer",
+                    background: B.surface, color: B.muted, fontSize: 11, fontWeight: 700,
+                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase", letterSpacing: 0.5,
+                  }}>Cancel</button>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* Driver Detail Panel */}
