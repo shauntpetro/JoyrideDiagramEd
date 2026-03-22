@@ -116,7 +116,7 @@
       });
     }
 
-    function transformCSVData(rows, regionFilter) {
+    function transformCSVData(rows, regionFilter, savedProfilesData) {
       // ── Step 1: Compute per-driver stats from ALL rows (before filtering) ──
       const driverStats = {}; // name → { totalMiles, tripCount, facilities, blockIds, workTypes }
       const driverSet = new Map(); // name → id
@@ -329,6 +329,20 @@
           const [hr, min] = parts[1].split(":").map(Number);
           if (!isNaN(hr)) blockStartHours.push(hr + (min || 0) / 60);
         });
+
+        // Merge historical start times from saved profiles
+        const driverName = [...driverSet.entries()].find(([, id]) => id === parseInt(driverId))?.[0];
+        if (driverName && savedProfilesData && savedProfilesData[driverName]) {
+          const saved = savedProfilesData[driverName];
+          const existingHours = new Set(blockStartHours.map(h => Math.round(h * 100)));
+          (saved.startTimes || []).forEach(t => {
+            const rounded = Math.round(t.hour * 100);
+            if (!existingHours.has(rounded)) {
+              blockStartHours.push(t.hour);
+              existingHours.add(rounded);
+            }
+          });
+        }
 
         if (blockStartHours.length === 0) {
           driverStartPrefs[driverId] = { preferredStartLabel: null, preferredStartLabels: [], preferredShift: null, shiftConsistency: 0 };
@@ -900,7 +914,7 @@
             onClick={(e) => e.stopPropagation()}
             style={{
               position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", marginTop: 4,
-              background: B.card, border: `1.5px solid ${B.bkp}`, borderRadius: 10, padding: 8, zIndex: 500, minWidth: 160,
+              background: B.card, border: `1.5px solid ${B.bkp}`, borderRadius: 10, padding: 8, zIndex: 500, minWidth: 240,
               boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
             }}
           >
@@ -909,7 +923,7 @@
             </div>
             {availableBackups.length > 0 && (availableBackups[0].blocksRemaining !== undefined || availableBackups[0].hoursScore > 0) && (
               <div style={{ fontSize: 8, color: B.dim, textAlign: "center", marginBottom: 4, fontStyle: "italic" }}>
-                Ranked by proximity{availableBackups[0].hosSource ? ", HOS" : ""} & cycle (≥34h, no time conflicts)
+                Ranked by start time match, proximity & cycle (≥34h, 10h rest, same domicile)
               </div>
             )}
             {availableBackups.length === 0 ? (
@@ -933,9 +947,11 @@
                   >
                     <PersonSVG size={14} color={isTopPick ? B.green : B.bkp} />
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 4, overflow: "hidden" }}>
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                        <span style={{ whiteSpace: "nowrap" }}>{d.label}</span>
                         {isTopPick && <span style={{ fontSize: 7, color: B.green, fontWeight: 700, background: B.greenBg, padding: "1px 4px", borderRadius: 3, flexShrink: 0 }}>★ TOP</span>}
+                        {d.startTimeScore > 0 && <span style={{ fontSize: 7, color: d.startTimeScore > 7 ? B.greenL : d.startTimeScore > 4 ? B.gold : B.dim, fontWeight: 600, flexShrink: 0 }}>⏰ {d.startTimeScore}/10</span>}
+                        {d.preferredStartLabel && <span style={{ fontSize: 7, color: B.dim, flexShrink: 0 }}>({d.preferredStartLabel})</span>}
                       </div>
                       {(d.blocksRemaining !== undefined || d.proximityScore > 0) && (
                         <div style={{ display: "flex", gap: 4, marginTop: 2, alignItems: "center" }}>
@@ -1018,7 +1034,7 @@
       const handleCSVUpload = (text) => {
         const rows = parseCSV(text);
         setCsvRows(rows);
-        const initial = transformCSVData(rows, "ALL");
+        const initial = transformCSVData(rows, "ALL", savedProfiles);
         setCsvRegions(initial.regions);
         setCsvRegion("ALL");
         setCsvStats({ drivers: initial.drivers.length, loads: initial.trucks.length, trips: initial.totalTrips });
@@ -1045,15 +1061,19 @@
       };
 
       // ─── Samsara ELD Functions ─────────────────────────────
+      const [samsaraLocations, setSamsaraLocations] = useState(null);
+
       const fetchSamsaraData = async () => {
         try {
-          const [driversRes, hosRes] = await Promise.all([
+          const [driversRes, hosRes, locRes] = await Promise.all([
             fetch("/api/samsara/drivers").then(r => r.json()),
             fetch("/api/samsara/hos/clocks").then(r => r.json()),
+            fetch("/api/samsara/locations").then(r => r.json()).catch(() => null),
           ]);
           setSamsaraDrivers(driversRes);
           setSamsaraHOS(hosRes);
-          return { drivers: driversRes, hos: hosRes };
+          if (locRes) setSamsaraLocations(locRes);
+          return { drivers: driversRes, hos: hosRes, locations: locRes };
         } catch (e) {
           console.error("Samsara fetch error:", e);
           return null;
@@ -1075,7 +1095,7 @@
             const fetched = await fetchSamsaraData();
             // Do initial driver matching if CSV is loaded
             if (fetched?.drivers?.data && csvRows) {
-              const csvData = transformCSVData(csvRows, csvRegion);
+              const csvData = transformCSVData(csvRows, csvRegion, savedProfiles);
               const matchResult = matchDriverNames(csvData.drivers, fetched.drivers.data);
               setDriverMatchMap(matchResult.matchMap);
               setSamsaraMatchInfo({ matched: matchResult.matched, total: matchResult.total, unmatched: matchResult.unmatched.length });
@@ -1099,7 +1119,52 @@
         setSamsaraMatchInfo(null);
       };
 
-      // Check Samsara connection status on load
+      // Driver profile bank
+      const [savedProfiles, setSavedProfiles] = useState(null);
+      const [profilesSaved, setProfilesSaved] = useState(false);
+
+      const loadDriverProfiles = () => {
+        fetch("/api/profiles").then(r => r.json()).then(data => {
+          if (data && typeof data === "object") setSavedProfiles(data);
+        }).catch(() => {});
+      };
+
+      const saveDriverProfiles = () => {
+        if (!csvRows || DRIVERS.length === 0) return;
+        const profiles = {};
+        DRIVERS.forEach(d => {
+          const startTimes = (d.blocks || [])
+            .filter(b => b.blockStart)
+            .map(b => {
+              const parts = b.blockStart.split(" ");
+              if (parts.length < 2) return null;
+              const [hr, min] = parts[1].split(":").map(Number);
+              if (isNaN(hr)) return null;
+              return { hour: hr + (min || 0) / 60, date: parts[0] };
+            })
+            .filter(Boolean);
+          profiles[d.label] = {
+            startTimes,
+            domicile: d.domicile,
+            preferredStartLabel: d.preferredStartLabel,
+            preferredShift: d.preferredShift,
+            shiftConsistency: d.shiftConsistency,
+          };
+        });
+        fetch("/api/profiles", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ drivers: profiles }),
+        }).then(r => r.json()).then(data => {
+          if (data.saved) {
+            setProfilesSaved(true);
+            setTimeout(() => setProfilesSaved(false), 3000);
+            loadDriverProfiles(); // refresh
+          }
+        }).catch(() => {});
+      };
+
+      // Check Samsara + load profiles on startup
       useEffect(() => {
         fetch("/api/samsara/status").then(r => r.json()).then(data => {
           if (data.connected) {
@@ -1107,6 +1172,7 @@
             fetchSamsaraData();
           }
         }).catch(() => {});
+        loadDriverProfiles();
       }, []);
 
       // Poll HOS data every 60 seconds when connected
@@ -1119,7 +1185,7 @@
       // Re-match drivers when CSV data or Samsara drivers change
       useEffect(() => {
         if (samsaraConnected && samsaraDrivers?.data && csvRows) {
-          const csvData = transformCSVData(csvRows, csvRegion);
+          const csvData = transformCSVData(csvRows, csvRegion, savedProfiles);
           const matchResult = matchDriverNames(csvData.drivers, samsaraDrivers.data);
           setDriverMatchMap(matchResult.matchMap);
           setSamsaraMatchInfo({ matched: matchResult.matched, total: matchResult.total, unmatched: matchResult.unmatched.length });
@@ -1138,7 +1204,7 @@
       };
 
       // Build data from CSV or fallback to demo MODELS
-      const data = csvRows ? transformCSVData(csvRows, csvRegion) : buildData(MODELS[mode]);
+      const data = csvRows ? transformCSVData(csvRows, csvRegion, savedProfiles) : buildData(MODELS[mode]);
       // Enrich with Samsara HOS data if connected
       if (samsaraConnected && samsaraHOS && csvRows) {
         data.drivers = enrichWithHOS(data.drivers, samsaraHOS, driverMatchMap);
@@ -1260,12 +1326,16 @@
           if (csvRows && d.cycleRemaining < MIN_CYCLE_FOR_BACKUP) return false;
 
           // RULE 2: Exclude drivers already executing a block during the proposed backup window
+          // Include 10-hour mandatory rest period after each block
+          const REST_HOURS_MS = 10 * 3600000; // 10 hours in ms
           if (csvRows && proposedStart && proposedEnd && d.blocks) {
             for (const blk of d.blocks) {
               const blkStart = parseBlockDateMs(blk.blockStart);
               const blkEnd = parseBlockDateMs(blk.blockEnd);
-              if (blocksOverlap(proposedStart, proposedEnd, blkStart, blkEnd)) {
-                return false; // driver is busy during this time
+              // Block + 10h rest window
+              const blkEndWithRest = blkEnd ? blkEnd + REST_HOURS_MS : blkEnd;
+              if (blocksOverlap(proposedStart, proposedEnd, blkStart, blkEndWithRest)) {
+                return false; // driver is busy or in mandatory rest
               }
             }
           }
@@ -1289,11 +1359,35 @@
           const blocksUsed = d.blockCount || 0;
           const blocksRemaining = MAX_BLOCKS_PER_WEEK - blocksUsed;
           const homeTruckLabel = homeTruck?.operatorId ? homeTruck.operatorId.split("_").slice(-1)[0] : (homeTruck ? `L${homeTruck.id}` : "");
-          return { ...d, homeTruck: homeTruck?.id, homeTruckLabel, proximityScore, sharedFacilities, hoursScore: d.estWeeklyHours || 0, blocksUsed, blocksRemaining };
+          // Start time preference match: how close is the proposed block start to the driver's preferred start?
+          let startTimeScore = 0;
+          if (proposedStart && d.preferredStartLabels?.length > 0 && d.blocks?.length > 0) {
+            const proposedHour = new Date(proposedStart).getHours() + new Date(proposedStart).getMinutes() / 60;
+            // Find closest preferred start time
+            const prefHours = [];
+            (d.blocks || []).forEach(blk => {
+              if (!blk.blockStart) return;
+              const parts = blk.blockStart.split(" ");
+              if (parts.length >= 2) {
+                const [h, m] = parts[1].split(":").map(Number);
+                if (!isNaN(h)) prefHours.push(h + (m || 0) / 60);
+              }
+            });
+            if (prefHours.length > 0) {
+              const avgPref = prefHours.reduce((a, b) => a + b, 0) / prefHours.length;
+              const diff = Math.abs(proposedHour - avgPref);
+              // Score: 10 = exact match, 0 = 10+ hours apart
+              startTimeScore = Math.max(0, Math.round((10 - Math.min(diff, 10)) * 10) / 10);
+            }
+          }
+          return { ...d, homeTruck: homeTruck?.id, homeTruckLabel, proximityScore, sharedFacilities, hoursScore: d.estWeeklyHours || 0, blocksUsed, blocksRemaining, startTimeScore };
         });
 
-        // Sort: proximity first, then HOS duty remaining (if Samsara), then blocks used
+        // Sort: start time match first, then proximity, then HOS/blocks
         available.sort((a, b) => {
+          // Primary: start time preference match (highest first)
+          if (b.startTimeScore !== a.startTimeScore) return b.startTimeScore - a.startTimeScore;
+          // Then proximity
           if (b.proximityScore !== a.proximityScore) return b.proximityScore - a.proximityScore;
           // When Samsara connected, prefer drivers with more duty hours remaining
           if (samsaraConnected) {
@@ -1581,6 +1675,17 @@
                 error={samsaraError}
                 matchInfo={samsaraMatchInfo}
               />
+              {csvRows && (
+                <button onClick={saveDriverProfiles} style={{
+                  padding: "5px 12px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                  cursor: "pointer", fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                  letterSpacing: 0.5, transition: "all 0.2s", border: "none",
+                  background: profilesSaved ? "rgba(102,187,106,0.15)" : "rgba(255,255,255,0.06)",
+                  color: profilesSaved ? B.greenL : B.muted,
+                }}>
+                  {profilesSaved ? "✓ Saved" : "Save Profiles"}
+                </button>
+              )}
               {csvStats && (() => {
                 const avail = DRIVERS.filter(d => d.blockCount < MAX_BLOCKS_PER_WEEK).length;
                 const maxed = DRIVERS.filter(d => d.blockCount >= MAX_BLOCKS_PER_WEEK).length;

@@ -1,0 +1,598 @@
+{
+  "Dalinza Joynes": {
+    "startTimes": [
+      {
+        "hour": 18.4,
+        "date": "03/20/2026"
+      },
+      {
+        "hour": 18,
+        "date": "03/22/2026"
+      },
+      {
+        "hour": 19.5,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "6:51pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Ronell Ryland": {
+    "startTimes": [
+      {
+        "hour": 18,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 19.5,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "6:45pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Vicente REYES": {
+    "startTimes": [
+      {
+        "hour": 20.5,
+        "date": "03/20/2026"
+      },
+      {
+        "hour": 4,
+        "date": "03/23/2026"
+      },
+      {
+        "hour": 22.5,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "9:50pm",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 50
+  },
+  "Joseph JR RIVERA": {
+    "startTimes": [
+      {
+        "hour": 17,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 22.5,
+        "date": "03/23/2026"
+      },
+      {
+        "hour": 18,
+        "date": "03/27/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "5:30pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 67
+  },
+  "Wandalis Reyes": {
+    "startTimes": [
+      {
+        "hour": 11,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 7,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "7am",
+    "preferredShift": "AM",
+    "shiftConsistency": 75
+  },
+  "William Biddlecomb": {
+    "startTimes": [
+      {
+        "hour": 1,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 2,
+        "date": "03/23/2026"
+      },
+      {
+        "hour": 0,
+        "date": "03/26/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "1:15am",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 100
+  },
+  "Loretta Bowler": {
+    "startTimes": [
+      {
+        "hour": 9,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 2,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "2am, 9am",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 50
+  },
+  "Cornell lamar Tisdale": {
+    "startTimes": [
+      {
+        "hour": 20,
+        "date": "03/22/2026"
+      },
+      {
+        "hour": 15,
+        "date": "03/25/2026"
+      },
+      {
+        "hour": 16.5,
+        "date": "03/28/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "3:45pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Maurice Turner": {
+    "startTimes": [
+      {
+        "hour": 21,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 20,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "8:20pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 67
+  },
+  "Edwin Adolfo Vasquez Alcantara": {
+    "startTimes": [
+      {
+        "hour": 12,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 12.5,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "12:20pm",
+    "preferredShift": "MID",
+    "shiftConsistency": 100
+  },
+  "Cedric shelby": {
+    "startTimes": [
+      {
+        "hour": 3.1333333333333333,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 3.5,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "3:24am",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 100
+  },
+  "Joshua Brown": {
+    "startTimes": [
+      {
+        "hour": 17,
+        "date": "03/22/2026"
+      },
+      {
+        "hour": 18,
+        "date": "03/24/2026"
+      },
+      {
+        "hour": 22,
+        "date": "03/28/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "5:30pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 67
+  },
+  "Ulysses Herrera": {
+    "startTimes": [
+      {
+        "hour": 17,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "5pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Marcell Mason": {
+    "startTimes": [
+      {
+        "hour": 16,
+        "date": "03/21/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "4pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Eric Loving": {
+    "startTimes": [
+      {
+        "hour": 12.5,
+        "date": "03/21/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "12:30pm",
+    "preferredShift": "MID",
+    "shiftConsistency": 100
+  },
+  "Tegan Stephens": {
+    "startTimes": [
+      {
+        "hour": 15,
+        "date": "03/21/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "3pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Marcus Caudill": {
+    "startTimes": [
+      {
+        "hour": 16.5,
+        "date": "03/23/2026"
+      },
+      {
+        "hour": 15,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "3:45pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Justin Newton": {
+    "startTimes": [
+      {
+        "hour": 14,
+        "date": "03/21/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "2pm",
+    "preferredShift": "MID",
+    "shiftConsistency": 100
+  },
+  "Melody Jun": {
+    "startTimes": [
+      {
+        "hour": 0,
+        "date": "03/23/2026"
+      },
+      {
+        "hour": 4,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "4am",
+    "preferredShift": "AM",
+    "shiftConsistency": 67
+  },
+  "Veronica Venegas": {
+    "startTimes": [
+      {
+        "hour": 4.25,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 4,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "4:05am",
+    "preferredShift": "AM",
+    "shiftConsistency": 100
+  },
+  "Michael Wayne Damian": {
+    "startTimes": [
+      {
+        "hour": 16,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 14,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "2:30pm",
+    "preferredShift": "MID",
+    "shiftConsistency": 75
+  },
+  "Kevin LEE Tate-Smith": {
+    "startTimes": [
+      {
+        "hour": 14,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 12.5,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "1:15pm",
+    "preferredShift": "MID",
+    "shiftConsistency": 100
+  },
+  "Romeo Sena": {
+    "startTimes": [
+      {
+        "hour": 17.75,
+        "date": "03/20/2026"
+      },
+      {
+        "hour": 23,
+        "date": "03/22/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "11pm",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 75
+  },
+  "Gregory Bruce": {
+    "startTimes": [
+      {
+        "hour": 19.5,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 20,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "7:53pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Gregory Willis": {
+    "startTimes": [
+      {
+        "hour": 19,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "7pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Jon Harvey": {
+    "startTimes": [
+      {
+        "hour": 15,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 17,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "4:30pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Mark Ellis": {
+    "startTimes": [
+      {
+        "hour": 20,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 22,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "9:20pm",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 67
+  },
+  "Eric Longoria": {
+    "startTimes": [
+      {
+        "hour": 15,
+        "date": "03/22/2026"
+      },
+      {
+        "hour": 16.5,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "3:30pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Steven Jackson": {
+    "startTimes": [
+      {
+        "hour": 16.5,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 14,
+        "date": "03/25/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "2pm, 4:30pm",
+    "preferredShift": "MID",
+    "shiftConsistency": 50
+  },
+  "Kenneth Hadley": {
+    "startTimes": [
+      {
+        "hour": 23.5,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 21,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "9pm",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 100
+  },
+  "Keith Allen": {
+    "startTimes": [
+      {
+        "hour": 10,
+        "date": "03/21/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "10am",
+    "preferredShift": "MID",
+    "shiftConsistency": 100
+  },
+  "Dennis Garcia Cruz": {
+    "startTimes": [
+      {
+        "hour": 18,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 17,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "5:20pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Jevon Everett Woolbright": {
+    "startTimes": [
+      {
+        "hour": 17,
+        "date": "03/21/2026"
+      },
+      {
+        "hour": 18,
+        "date": "03/23/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "5:45pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  },
+  "Gerald Klein": {
+    "startTimes": [
+      {
+        "hour": 11,
+        "date": "03/21/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "11am",
+    "preferredShift": "MID",
+    "shiftConsistency": 100
+  },
+  "Clevron III TUCKER": {
+    "startTimes": [
+      {
+        "hour": 23.5,
+        "date": "03/21/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "11:30pm",
+    "preferredShift": "NIGHT",
+    "shiftConsistency": 100
+  },
+  "Ken Suwanakrit": {
+    "startTimes": [
+      {
+        "hour": 15,
+        "date": "03/22/2026"
+      }
+    ],
+    "domicile": "LAS",
+    "lastUpdated": "2026-03-22T01:18:05.276Z",
+    "preferredStartLabel": "3pm",
+    "preferredShift": "PM",
+    "shiftConsistency": 100
+  }
+}

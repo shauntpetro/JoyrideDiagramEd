@@ -8,6 +8,25 @@ const PORT = process.env.PORT || 8080;
 // ── In-memory Samsara token (never persisted to disk) ──
 let samsaraToken = null;
 
+// ── Driver profiles bank (persisted to disk) ──
+const PROFILES_PATH = path.join(__dirname, "driver-profiles.json");
+
+function loadProfiles() {
+  try {
+    if (fs.existsSync(PROFILES_PATH)) {
+      return JSON.parse(fs.readFileSync(PROFILES_PATH, "utf8"));
+    }
+  } catch (e) { console.error("Failed to load profiles:", e.message); }
+  return {};
+}
+
+function saveProfiles(profiles) {
+  try {
+    fs.writeFileSync(PROFILES_PATH, JSON.stringify(profiles, null, 2), "utf8");
+    return true;
+  } catch (e) { console.error("Failed to save profiles:", e.message); return false; }
+}
+
 const MIME = {
   ".html": "text/html",
   ".js": "application/javascript",
@@ -141,10 +160,70 @@ const server = http.createServer(async (req, res) => {
         return jsonRes(res, result.status === 200 ? 200 : 502, result.data);
       }
 
+      // GET /api/samsara/locations — current driver/vehicle locations
+      if (req.method === "GET" && urlPath === "/api/samsara/locations") {
+        const result = await samsaraRequest("GET", "/fleet/vehicles/locations");
+        return jsonRes(res, result.status === 200 ? 200 : 502, result.data);
+      }
+
       return jsonRes(res, 404, { error: "Unknown API route" });
 
     } catch (e) {
       console.error("API error:", e.message);
+      return jsonRes(res, 500, { error: e.message });
+    }
+  }
+
+  // ── Driver Profiles API ──
+  if (urlPath.startsWith("/api/profiles")) {
+    try {
+      // GET /api/profiles — load all driver profiles
+      if (req.method === "GET" && urlPath === "/api/profiles") {
+        const profiles = loadProfiles();
+        return jsonRes(res, 200, profiles);
+      }
+
+      // POST /api/profiles — save/merge driver profiles
+      if (req.method === "POST" && urlPath === "/api/profiles") {
+        const body = await readBody(req);
+        if (!body.drivers || typeof body.drivers !== "object") {
+          return jsonRes(res, 400, { error: "drivers object required" });
+        }
+        const existing = loadProfiles();
+        // Merge: for each driver, accumulate start time history
+        Object.entries(body.drivers).forEach(([name, profile]) => {
+          if (!existing[name]) {
+            existing[name] = { startTimes: [], domicile: profile.domicile, lastUpdated: new Date().toISOString() };
+          }
+          // Append new start times (deduplicate by value)
+          const existingTimes = new Set(existing[name].startTimes.map(t => t.hour));
+          (profile.startTimes || []).forEach(t => {
+            if (!existingTimes.has(t.hour)) {
+              existing[name].startTimes.push(t);
+              existingTimes.add(t.hour);
+            }
+          });
+          existing[name].domicile = profile.domicile || existing[name].domicile;
+          existing[name].preferredStartLabel = profile.preferredStartLabel || existing[name].preferredStartLabel;
+          existing[name].preferredShift = profile.preferredShift || existing[name].preferredShift;
+          existing[name].shiftConsistency = profile.shiftConsistency ?? existing[name].shiftConsistency;
+          existing[name].lastUpdated = new Date().toISOString();
+        });
+        const saved = saveProfiles(existing);
+        console.log(`Driver profiles saved: ${Object.keys(existing).length} drivers`);
+        return jsonRes(res, saved ? 200 : 500, { saved, count: Object.keys(existing).length });
+      }
+
+      // DELETE /api/profiles — clear all profiles
+      if (req.method === "DELETE" && urlPath === "/api/profiles") {
+        saveProfiles({});
+        console.log("Driver profiles cleared");
+        return jsonRes(res, 200, { cleared: true });
+      }
+
+      return jsonRes(res, 404, { error: "Unknown profiles route" });
+    } catch (e) {
+      console.error("Profiles API error:", e.message);
       return jsonRes(res, 500, { error: e.message });
     }
   }
