@@ -699,32 +699,48 @@
     }
 
     // ─── Enrich Drivers with HOS Data ─────────────────────────
-    function enrichWithHOS(drivers, hosData, matchMap, locationData) {
+    function enrichWithHOS(drivers, hosData, matchMap, locationData, samsaraDriversList) {
       if (!hosData || !hosData.data) return drivers;
       const hosDrivers = hosData.data;
-      // Build vehicle location lookup — index by multiple keys for flexible matching
-      const vehicleLocations = {};
-      const vehicleDriverMap = {}; // driverName → location (from vehicle's assigned driver)
+
+      // ── Build vehicle → location lookup from /fleet/vehicles/locations ──
+      const vehicleLocMap = {}; // vehicleId → formattedLocation string
       if (locationData?.data) {
-        (Array.isArray(locationData.data) ? locationData.data : [locationData.data]).forEach(v => {
-          const loc = v.location || v;
-          const lat = loc.latitude ?? loc.lat ?? null;
-          const lng = loc.longitude ?? loc.lng ?? loc.lon ?? null;
+        locationData.data.forEach(v => {
+          const loc = v.location;
+          if (!loc) return;
           const label = loc.reverseGeo?.formattedLocation
-            || loc.formattedLocation
-            || loc.address
-            || (lat && lng ? `${lat.toFixed(3)}, ${lng.toFixed(3)}` : null);
+            || (loc.latitude && loc.longitude ? `${loc.latitude.toFixed(3)}, ${loc.longitude.toFixed(3)}` : null);
           if (!label) return;
-          // Index by every possible key
-          if (v.id) vehicleLocations[v.id] = label;
-          if (v.name) vehicleLocations[v.name] = label;
-          if (v.serial) vehicleLocations[v.serial] = label;
-          if (v.externalIds) Object.values(v.externalIds).forEach(eid => { vehicleLocations[eid] = label; });
-          // If vehicle has a driver assignment, map directly
-          const assignedDriver = v.staticAssignedDriver?.name || v.driver?.name || v._assignedDriverName;
-          if (assignedDriver) vehicleDriverMap[assignedDriver.toLowerCase().trim()] = label;
+          if (v.id) vehicleLocMap[v.id] = label;
+          if (v.name) vehicleLocMap[v.name] = label;
         });
       }
+
+      // ── Build samsaraDriverId → vehicleId from /fleet/drivers staticAssignedVehicle ──
+      const driverStaticVehicle = {}; // samsaraDriverId → vehicleId
+      if (samsaraDriversList?.data) {
+        samsaraDriversList.data.forEach(drv => {
+          if (drv.staticAssignedVehicle?.id) {
+            driverStaticVehicle[drv.id] = drv.staticAssignedVehicle.id;
+          }
+        });
+      }
+
+      // Format remaining times as "Xh Ym"
+      const fmtRemaining = (min) => {
+        if (min === null) return null;
+        const h = Math.floor(min / 60);
+        const m = min % 60;
+        return m > 0 ? `${h}h${m}m` : `${h}h`;
+      };
+
+      const statusMap = {
+        "driving": "driving", "Driving": "driving",
+        "onDuty": "on_duty", "On Duty": "on_duty", "ON_DUTY": "on_duty",
+        "offDuty": "off_duty", "Off Duty": "off_duty", "OFF_DUTY": "off_duty",
+        "sleeperBerth": "sleeper_berth", "Sleeper Berth": "sleeper_berth", "SLEEPER_BERTH": "sleeper_berth",
+      };
 
       return drivers.map(d => {
         const samsaraId = matchMap[d.id];
@@ -733,58 +749,39 @@
         const hosEntry = hosDrivers.find(h => h.driver?.id === samsaraId);
         if (!hosEntry) return d;
 
-        // Samsara HOS clocks — try multiple possible field paths
-        const clocks = hosEntry.clocks || hosEntry;
-
-        // Samsara field names: clocks.drive.driveRemainingDurationMs, etc.
-        const driveRemainingMs = clocks.drive?.driveRemainingDurationMs
-          ?? clocks.drive?.timeRemainingMs ?? clocks.driveRemaining?.timeRemainingMs ?? null;
-        const dutyRemainingMs = clocks.shift?.shiftRemainingDurationMs
-          ?? clocks.shift?.timeRemainingMs ?? clocks.shiftRemaining?.timeRemainingMs ?? null;
-        const cycleRemainingMs = clocks.cycle?.cycleRemainingDurationMs
-          ?? clocks.cycle?.timeRemainingMs ?? clocks.cycleRemaining?.timeRemainingMs ?? null;
-        const breakRemainingMs = clocks.break?.timeUntilBreakDurationMs
-          ?? clocks.break?.timeRemainingMs ?? clocks.timeUntilBreak?.timeRemainingMs ?? null;
-        const cycleTomorrowMs = clocks.cycle?.cycleTomorrowDurationMs ?? null;
+        // ── HOS Clocks (confirmed field names from Samsara API) ──
+        const clocks = hosEntry.clocks || {};
+        const driveRemainingMs = clocks.drive?.driveRemainingDurationMs ?? null;
+        const dutyRemainingMs = clocks.shift?.shiftRemainingDurationMs ?? null;
+        const cycleRemainingMs = clocks.cycle?.cycleRemainingDurationMs ?? null;
+        const breakRemainingMs = clocks.break?.timeUntilBreakDurationMs ?? null;
 
         const driveRemainingMin = driveRemainingMs !== null ? Math.round(driveRemainingMs / 60000) : null;
         const dutyRemainingMin = dutyRemainingMs !== null ? Math.round(dutyRemainingMs / 60000) : null;
         const cycleRemainingMin = cycleRemainingMs !== null ? Math.round(cycleRemainingMs / 60000) : null;
         const breakRemainingMin = breakRemainingMs !== null ? Math.round(breakRemainingMs / 60000) : null;
 
-        // Current duty status — try multiple paths
-        const currentStatus = hosEntry.currentDutyStatus?.hosStatusType
-          || hosEntry.hosStatusType
-          || hosEntry.currentStatus || null;
-        const statusMap = {
-          "driving": "driving", "Driving": "driving",
-          "onDuty": "on_duty", "On Duty": "on_duty", "ON_DUTY": "on_duty",
-          "offDuty": "off_duty", "Off Duty": "off_duty", "OFF_DUTY": "off_duty",
-          "sleeperBerth": "sleeper_berth", "Sleeper Berth": "sleeper_berth", "SLEEPER_BERTH": "sleeper_berth",
-        };
+        // ── Duty Status (confirmed: hosEntry.currentDutyStatus.hosStatusType) ──
+        const currentStatus = hosEntry.currentDutyStatus?.hosStatusType || null;
 
-        // Time in current status
-        const timeInStatusMs = hosEntry.currentDutyStatus?.timeInCurrentStatusMs
-          ?? hosEntry.timeInCurrentStatusMs ?? null;
-        const timeInStatusMin = timeInStatusMs !== null ? Math.round(timeInStatusMs / 60000) : null;
+        // ── Vehicle & Location ──
+        // Priority 1: HOS currentVehicle (driver is actively in this truck right now)
+        // Priority 2: staticAssignedVehicle from /fleet/drivers
+        const currentVehicleId = hosEntry.currentVehicle?.id || null;
+        const currentVehicleName = hosEntry.currentVehicle?.name || null;
+        const staticVehicleId = driverStaticVehicle[samsaraId] || null;
 
-        // Vehicle info
-        const vehicleId = hosEntry.driver?.vehicleId || hosEntry.vehicleId || hosEntry.vehicle?.id || null;
-        const vehicleName = hosEntry.vehicle?.name || null;
+        const resolvedVehicleId = currentVehicleId || staticVehicleId;
+        const resolvedLocation = vehicleLocMap[currentVehicleId]
+          || vehicleLocMap[currentVehicleName]
+          || vehicleLocMap[staticVehicleId]
+          || null;
 
-        // Calculate real weekly hours from cycle (70-hr cycle minus remaining)
-        const cycleMaxMin = 70 * 60; // 70 hours in minutes
+        // ── Calculate real weekly hours from 70-hr cycle ──
+        const cycleMaxMin = 70 * 60;
         const realWeeklyHours = cycleRemainingMin !== null
           ? Math.round((cycleMaxMin - cycleRemainingMin) / 6) / 10
           : d.estWeeklyHours;
-
-        // Format remaining times as "Xh Ym"
-        const fmtRemaining = (min) => {
-          if (min === null) return null;
-          const h = Math.floor(min / 60);
-          const m = min % 60;
-          return m > 0 ? `${h}h${m}m` : `${h}h`;
-        };
 
         return {
           ...d,
@@ -793,7 +790,6 @@
           hosDutyRemaining: dutyRemainingMin,
           hosCycleRemaining: cycleRemainingMin,
           hosBreakRemaining: breakRemainingMin,
-          hosTimeInStatus: timeInStatusMin,
           hosDriveRemainingFmt: fmtRemaining(driveRemainingMin),
           hosDutyRemainingFmt: fmtRemaining(dutyRemainingMin),
           hosCycleRemainingFmt: fmtRemaining(cycleRemainingMin),
@@ -801,13 +797,9 @@
           cycleRemaining: cycleRemainingMin !== null ? Math.round(cycleRemainingMin / 6) / 10 : d.cycleRemaining,
           estWeeklyHours: realWeeklyHours,
           hosSource: "samsara",
-          vehicleName,
-          // Location from Samsara — try multiple matching strategies
-          currentLocation: vehicleLocations[vehicleId]
-            || vehicleLocations[vehicleName]
-            || vehicleDriverMap[d.label.toLowerCase().trim()]
-            || (hosEntry.driver?.name ? vehicleDriverMap[hosEntry.driver.name.toLowerCase().trim()] : null)
-            || null,
+          vehicleName: currentVehicleName || null,
+          vehicleId: resolvedVehicleId,
+          currentLocation: resolvedLocation,
         };
       });
     }
@@ -1291,7 +1283,7 @@
       const data = csvRows ? transformCSVData(csvRows, csvRegion, savedProfiles) : buildData(MODELS[mode]);
       // Enrich with Samsara HOS data if connected
       if (samsaraConnected && samsaraHOS && csvRows) {
-        data.drivers = enrichWithHOS(data.drivers, samsaraHOS, driverMatchMap, samsaraLocations);
+        data.drivers = enrichWithHOS(data.drivers, samsaraHOS, driverMatchMap, samsaraLocations, samsaraDrivers);
       }
       const { drivers: DRIVERS, trucks: TRUCKS, blocksPerLoad, hasPrimarySecondary } = data;
       const BLOCK_NUMS = Array.from({ length: blocksPerLoad }, (_, i) => i + 1);
