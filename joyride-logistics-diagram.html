@@ -317,7 +317,16 @@
       });
 
       // ── Step 6: Preferred start time analysis (from block start times) ──
-      const driverStartPrefs = {}; // driverId → { preferredStartLabel, preferredShift, shiftConsistency, ... }
+      // Helper: format decimal hour → "7pm", "5:30am" etc.
+      const fmtHour = (h) => {
+        const rounded = Math.round(h);
+        const m = Math.round((h - Math.floor(h)) * 60);
+        const h12 = rounded % 12 || 12;
+        const ap = rounded >= 12 ? "pm" : "am";
+        return (m > 5 && m < 55) ? `${h12}:${m.toString().padStart(2, "0")}${ap}` : `${h12}${ap}`;
+      };
+
+      const driverStartPrefs = {};
       Object.entries(driverBlocksMap).forEach(([driverId, blocks]) => {
         // Extract the hour-of-day from each block's start time
         const blockStartHours = [];
@@ -330,61 +339,70 @@
         });
 
         if (blockStartHours.length === 0) {
-          driverStartPrefs[driverId] = { avgStartHour: null, modeStartHour: null, preferredShift: null, shiftConsistency: 0, preferredStartLabel: null };
+          driverStartPrefs[driverId] = { preferredStartLabel: null, preferredStartLabels: [], preferredShift: null, shiftConsistency: 0 };
           return;
         }
 
-        // Group into 2-hour windows and find the most common cluster
-        const windows = {}; // windowStart → { count, hours[] }
-        blockStartHours.forEach(h => {
-          // Round down to nearest 2-hour window (0-2, 2-4, 4-6, ..., 22-24)
-          const windowStart = Math.floor(h / 2) * 2;
-          if (!windows[windowStart]) windows[windowStart] = { count: 0, hours: [] };
-          windows[windowStart].count++;
-          windows[windowStart].hours.push(h);
+        // Cluster block start times: group times within 2 hours of each other
+        const sorted = [...blockStartHours].sort((a, b) => a - b);
+        const clusters = []; // [{ hours: [], avg: number }]
+        sorted.forEach(h => {
+          // Try to add to an existing cluster (within 2h of cluster average)
+          let added = false;
+          for (const c of clusters) {
+            if (Math.abs(h - c.avg) <= 2 || Math.abs(h - c.avg - 24) <= 2 || Math.abs(h - c.avg + 24) <= 2) {
+              c.hours.push(h);
+              c.avg = c.hours.reduce((a, b) => a + b, 0) / c.hours.length;
+              added = true;
+              break;
+            }
+          }
+          if (!added) clusters.push({ hours: [h], avg: h });
         });
 
-        // Find the top window
-        const sortedWindows = Object.entries(windows).sort((a, b) => b[1].count - a[1].count);
-        const topWindow = sortedWindows[0];
-        const topWindowStart = parseInt(topWindow[0], 10);
-        const topWindowHours = topWindow[1].hours;
+        // Build labels based on rules
+        let preferredStartLabels = [];
 
-        // Average within the top window for precise preferred time
-        const avgInWindow = topWindowHours.reduce((a, b) => a + b, 0) / topWindowHours.length;
-        const roundedHour = Math.round(avgInWindow);
+        if (blockStartHours.length < 3) {
+          // Less than 3 blocks: show each individual start time
+          if (clusters.length === 1 && clusters[0].hours.length >= 2) {
+            // All within 2h — show the cluster average as one preferred time
+            preferredStartLabels = [fmtHour(clusters[0].avg)];
+          } else {
+            // Different times — list each one
+            preferredStartLabels = sorted.map(h => fmtHour(h));
+          }
+        } else {
+          // 3+ blocks: show clusters that have ≥2 starts
+          const validClusters = clusters.filter(c => c.hours.length >= 2);
+          if (validClusters.length > 0) {
+            // Show each valid cluster's average
+            preferredStartLabels = validClusters.map(c => fmtHour(c.avg));
+          } else {
+            // No cluster has ≥2 — all different times, show all
+            preferredStartLabels = sorted.map(h => fmtHour(h));
+          }
+        }
 
-        // Shift classification
-        const amCount = blockStartHours.filter(h => h >= 4 && h < 10).length;
-        const midCount = blockStartHours.filter(h => h >= 10 && h < 15).length;
-        const pmCount = blockStartHours.filter(h => h >= 15 && h < 21).length;
-        const nightCount = blockStartHours.filter(h => h >= 21 || h < 4).length;
-        const shifts = [
-          { label: "AM", count: amCount },
-          { label: "MID", count: midCount },
-          { label: "PM", count: pmCount },
-          { label: "NIGHT", count: nightCount },
-        ].sort((a, b) => b.count - a.count);
-        const preferredShift = shifts[0].label;
-        const shiftConsistency = Math.round((shifts[0].count / blockStartHours.length) * 100);
-
-        // Format label — show the average start time in the preferred window
-        const displayHr = roundedHour % 12 || 12;
-        const displayAmPm = roundedHour >= 12 ? "pm" : "am";
-        // Also show minutes if the average isn't on the hour
-        const avgMin = Math.round((avgInWindow - Math.floor(avgInWindow)) * 60);
-        const preferredStartLabel = avgMin > 5 && avgMin < 55
-          ? `${displayHr}:${avgMin.toString().padStart(2, "0")}${displayAmPm}`
-          : `${displayHr}${displayAmPm}`;
+        // Shift classification based on primary cluster
+        const primaryAvg = clusters.sort((a, b) => b.hours.length - a.hours.length)[0]?.avg || 0;
+        const preferredShift = primaryAvg >= 4 && primaryAvg < 10 ? "AM"
+          : primaryAvg >= 10 && primaryAvg < 15 ? "MID"
+          : primaryAvg >= 15 && primaryAvg < 21 ? "PM" : "NIGHT";
+        const shiftHours = blockStartHours.filter(h =>
+          preferredShift === "AM" ? (h >= 4 && h < 10) :
+          preferredShift === "MID" ? (h >= 10 && h < 15) :
+          preferredShift === "PM" ? (h >= 15 && h < 21) :
+          (h >= 21 || h < 4)
+        );
+        const shiftConsistency = Math.round((shiftHours.length / blockStartHours.length) * 100);
 
         driverStartPrefs[driverId] = {
-          avgStartHour: Math.round(avgInWindow * 10) / 10,
-          modeStartHour: roundedHour,
+          preferredStartLabel: preferredStartLabels.join(", "),
+          preferredStartLabels,
           preferredShift,
           shiftConsistency,
-          preferredStartLabel,
           blockStartCount: blockStartHours.length,
-          windowRange: `${topWindowStart}:00-${topWindowStart + 2}:00`,
         };
       });
 
@@ -423,7 +441,7 @@
           driverNumber: driverNum,
           blocks: driverBlocksMap[dId] || [],
           // Preferred start time profile (derived from block start times)
-          ...(driverStartPrefs[dId] || { avgStartHour: null, modeStartHour: null, preferredShift: null, shiftConsistency: 0, preferredStartLabel: null }),
+          ...(driverStartPrefs[dId] || { preferredStartLabel: null, preferredStartLabels: [], preferredShift: null, shiftConsistency: 0 }),
         };
       });
 
@@ -1826,14 +1844,18 @@
                                 }} />
                               )}
                               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
-                              {d.preferredStartLabel && (
-                                <span style={{
-                                  fontSize: 7, fontWeight: 700, flexShrink: 0,
-                                  padding: "1px 4px", borderRadius: 3, letterSpacing: 0.3,
-                                  background: d.preferredShift === "AM" ? "rgba(100,181,246,0.12)" : d.preferredShift === "PM" ? "rgba(255,213,79,0.12)" : d.preferredShift === "NIGHT" ? "rgba(186,104,200,0.12)" : "rgba(255,255,255,0.06)",
-                                  color: d.preferredShift === "AM" ? "#64b5f6" : d.preferredShift === "PM" ? B.gold : d.preferredShift === "NIGHT" ? B.bkpL : B.dim,
-                                }}>
-                                  {d.preferredStartLabel}
+                              {d.preferredStartLabels && d.preferredStartLabels.length > 0 && (
+                                <span style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}>
+                                  {d.preferredStartLabels.map((lbl, li) => (
+                                    <span key={li} style={{
+                                      fontSize: 7, fontWeight: 700,
+                                      padding: "1px 3px", borderRadius: 3, letterSpacing: 0.3,
+                                      background: d.preferredShift === "AM" ? "rgba(100,181,246,0.12)" : d.preferredShift === "PM" ? "rgba(255,213,79,0.12)" : d.preferredShift === "NIGHT" ? "rgba(186,104,200,0.12)" : "rgba(255,255,255,0.06)",
+                                      color: d.preferredShift === "AM" ? "#64b5f6" : d.preferredShift === "PM" ? B.gold : d.preferredShift === "NIGHT" ? B.bkpL : B.dim,
+                                    }}>
+                                      {lbl}
+                                    </span>
+                                  ))}
                                 </span>
                               )}
                             </div>
