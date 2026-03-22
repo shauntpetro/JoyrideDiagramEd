@@ -2221,43 +2221,37 @@
           </div>
           )}
 
-          {/* Backup Confirmation Modal */}
+          {/* Backup Confirmation Banner — no overlay, no fading */}
           {pendingBackup && (
-            <div style={{
-              position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-              background: "rgba(0,0,0,0.5)", zIndex: 1000,
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }} onClick={cancelPendingBackup}>
-              <div className="panel-enter" onClick={(e) => e.stopPropagation()} style={{
-                background: B.card, border: `2px solid ${B.bkp}`, borderRadius: 14, padding: 24,
-                minWidth: 320, maxWidth: 400, boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
-              }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: B.bkpL, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 12, textAlign: "center" }}>
-                  Confirm Backup Assignment
-                </div>
-                <div style={{ fontSize: 12, color: B.text, textAlign: "center", marginBottom: 6 }}>
-                  Assign <span style={{ color: B.bkpL, fontWeight: 700 }}>{pendingBackup.driverName}</span> as backup?
-                </div>
-                <div style={{ fontSize: 10, color: B.muted, textAlign: "center", marginBottom: 16 }}>
+            <div className="panel-enter" style={{
+              position: "sticky", top: 0, zIndex: 1000,
+              background: B.card, borderBottom: `2px solid ${B.bkp}`,
+              padding: "10px 28px", display: "flex", alignItems: "center", justifyContent: "center", gap: 16,
+              boxShadow: "0 4px 20px rgba(0,0,0,0.4)",
+            }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: B.bkpL, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                Confirm Backup:
+              </span>
+              <span style={{ fontSize: 12, color: B.text }}>
+                Assign <span style={{ color: B.bkpL, fontWeight: 700 }}>{pendingBackup.driverName}</span> to{" "}
+                <span style={{ color: B.muted }}>
                   {(() => {
                     const truck = TRUCKS.find(t => t.id === pendingBackup.truckId);
                     const blockId = truck?.blockIds?.[pendingBackup.blockNum - 1];
-                    return blockId ? `Block ${blockId.slice(0, 10)} on ${truck.operatorId || `Seat ${truck.id}`}` : "";
+                    return blockId ? blockId.slice(0, 10) : "";
                   })()}
-                </div>
-                <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
-                  <button onClick={confirmBackupAssignment} style={{
-                    padding: "8px 24px", borderRadius: 8, border: "none", cursor: "pointer",
-                    background: B.bkp, color: "#fff", fontSize: 11, fontWeight: 700,
-                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase", letterSpacing: 0.5,
-                  }}>Confirm</button>
-                  <button onClick={cancelPendingBackup} style={{
-                    padding: "8px 24px", borderRadius: 8, border: `1px solid ${B.bdr}`, cursor: "pointer",
-                    background: B.surface, color: B.muted, fontSize: 11, fontWeight: 700,
-                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase", letterSpacing: 0.5,
-                  }}>Cancel</button>
-                </div>
-              </div>
+                </span>?
+              </span>
+              <button onClick={confirmBackupAssignment} style={{
+                padding: "6px 20px", borderRadius: 6, border: "none", cursor: "pointer",
+                background: B.bkp, color: "#fff", fontSize: 10, fontWeight: 700,
+                fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase", letterSpacing: 0.5,
+              }}>✓ Confirm</button>
+              <button onClick={cancelPendingBackup} style={{
+                padding: "6px 20px", borderRadius: 6, border: `1px solid ${B.bdr}`, cursor: "pointer",
+                background: B.surface, color: B.muted, fontSize: 10, fontWeight: 700,
+                fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase", letterSpacing: 0.5,
+              }}>✕ Cancel</button>
             </div>
           )}
 
