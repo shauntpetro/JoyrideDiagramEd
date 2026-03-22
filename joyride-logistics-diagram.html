@@ -317,13 +317,13 @@
       });
 
       // ── Step 6: Preferred start time analysis (from block start times) ──
-      // Helper: format decimal hour → "7pm", "5:30am" etc.
+      // Helper: format decimal hour → "6:45pm", "5am" etc.
       const fmtHour = (h) => {
-        const rounded = Math.round(h);
+        const hr = Math.floor(h) % 24;
         const m = Math.round((h - Math.floor(h)) * 60);
-        const h12 = rounded % 12 || 12;
-        const ap = rounded >= 12 ? "pm" : "am";
-        return (m > 5 && m < 55) ? `${h12}:${m.toString().padStart(2, "0")}${ap}` : `${h12}${ap}`;
+        const h12 = hr % 12 || 12;
+        const ap = hr >= 12 ? "pm" : "am";
+        return (m > 0) ? `${h12}:${m.toString().padStart(2, "0")}${ap}` : `${h12}${ap}`;
       };
 
       const driverStartPrefs = {};
