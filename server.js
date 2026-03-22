@@ -166,6 +166,33 @@ const server = http.createServer(async (req, res) => {
         return jsonRes(res, result.status === 200 ? 200 : 502, result.data);
       }
 
+      // GET /api/samsara/vehicles — vehicle list with driver assignments
+      if (req.method === "GET" && urlPath === "/api/samsara/vehicles") {
+        const result = await samsaraRequest("GET", "/fleet/vehicles");
+        return jsonRes(res, result.status === 200 ? 200 : 502, result.data);
+      }
+
+      // GET /api/samsara/debug — raw HOS + locations for debugging field mapping
+      if (req.method === "GET" && urlPath === "/api/samsara/debug") {
+        const [hos, locs, drivers] = await Promise.all([
+          samsaraRequest("GET", "/fleet/hos/clocks"),
+          samsaraRequest("GET", "/fleet/vehicles/locations"),
+          samsaraRequest("GET", "/fleet/drivers?limit=3"),
+        ]);
+        // Return first entry of each for field inspection
+        const hosEntry = hos.data?.data?.[0] || hos.data;
+        const locEntry = locs.data?.data?.[0] || locs.data;
+        const driverEntry = drivers.data?.data?.[0] || drivers.data;
+        return jsonRes(res, 200, {
+          hosFields: hosEntry ? Object.keys(hosEntry) : [],
+          hosSample: hosEntry,
+          locFields: locEntry ? Object.keys(locEntry) : [],
+          locSample: locEntry,
+          driverFields: driverEntry ? Object.keys(driverEntry) : [],
+          driverSample: driverEntry,
+        });
+      }
+
       return jsonRes(res, 404, { error: "Unknown API route" });
 
     } catch (e) {

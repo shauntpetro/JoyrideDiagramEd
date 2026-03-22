@@ -702,17 +702,27 @@
     function enrichWithHOS(drivers, hosData, matchMap, locationData) {
       if (!hosData || !hosData.data) return drivers;
       const hosDrivers = hosData.data;
-      // Build vehicle location lookup
+      // Build vehicle location lookup — index by multiple keys for flexible matching
       const vehicleLocations = {};
+      const vehicleDriverMap = {}; // driverName → location (from vehicle's assigned driver)
       if (locationData?.data) {
-        locationData.data.forEach(v => {
-          if (v.location) {
-            const loc = v.location;
-            const label = loc.reverseGeo?.formattedLocation || `${(loc.latitude || 0).toFixed(2)}, ${(loc.longitude || 0).toFixed(2)}`;
-            // Map by vehicle ID — we'll match to drivers via their assigned vehicle
-            if (v.id) vehicleLocations[v.id] = label;
-            if (v.name) vehicleLocations[v.name] = label;
-          }
+        (Array.isArray(locationData.data) ? locationData.data : [locationData.data]).forEach(v => {
+          const loc = v.location || v;
+          const lat = loc.latitude ?? loc.lat ?? null;
+          const lng = loc.longitude ?? loc.lng ?? loc.lon ?? null;
+          const label = loc.reverseGeo?.formattedLocation
+            || loc.formattedLocation
+            || loc.address
+            || (lat && lng ? `${lat.toFixed(3)}, ${lng.toFixed(3)}` : null);
+          if (!label) return;
+          // Index by every possible key
+          if (v.id) vehicleLocations[v.id] = label;
+          if (v.name) vehicleLocations[v.name] = label;
+          if (v.serial) vehicleLocations[v.serial] = label;
+          if (v.externalIds) Object.values(v.externalIds).forEach(eid => { vehicleLocations[eid] = label; });
+          // If vehicle has a driver assignment, map directly
+          const assignedDriver = v.staticAssignedDriver?.name || v.driver?.name;
+          if (assignedDriver) vehicleDriverMap[assignedDriver.toLowerCase().trim()] = label;
         });
       }
 
@@ -798,8 +808,12 @@
           estWeeklyHours: realWeeklyHours,
           hosSource: "samsara",
           vehicleName,
-          // Location from Samsara
-          currentLocation: vehicleId ? (vehicleLocations[vehicleId] || vehicleLocations[vehicleName] || null) : null,
+          // Location from Samsara — try multiple matching strategies
+          currentLocation: vehicleLocations[vehicleId]
+            || vehicleLocations[vehicleName]
+            || vehicleDriverMap[d.label.toLowerCase().trim()]
+            || (hosEntry.driver?.name ? vehicleDriverMap[hosEntry.driver.name.toLowerCase().trim()] : null)
+            || null,
         };
       });
     }
