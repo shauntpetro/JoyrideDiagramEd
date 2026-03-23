@@ -1974,7 +1974,7 @@
 
           {/* ═══ CSV MODE: Driver-centric row layout ═══ */}
           {csvRows && (
-            <div key={`csv-${csvRegion}`} ref={containerRef} style={{ padding: "16px 20px", background: B.bg }}>
+            <div key={`csv-${csvRegion}`} ref={containerRef} style={{ padding: "16px 20px", background: B.bg, overflowX: "auto" }}>
               {/* Search & Sort Header */}
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 16, fontWeight: 700, color: B.red }}>{DRIVERS.length}</span>
@@ -1996,13 +1996,14 @@
               </div>
 
               {/* Column headers */}
-              <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "8px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "8px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 6, minWidth: "fit-content" }}>
                 <div style={{ width: 40, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center" }}>#</div>
                 <div style={{ width: 280, fontSize: 10, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
                 <div style={{ width: 80, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Status</div>
-                {[1, 2, 3].map(n => (
-                  <div key={n} style={{ width: 120, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
+                {[1, 2, 3, 4].map(n => (
+                  <div key={n} style={{ width: 130, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
                 ))}
+                <div style={{ width: 100, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>+</div>
               </div>
 
               {/* Driver rows grouped by domicile */}
@@ -2113,12 +2114,13 @@
                           onMouseEnter={() => setHoveredDriver(d.id)}
                           onMouseLeave={() => setHoveredDriver(null)}
                           style={{
-                            display: "flex", alignItems: "center", gap: 0, padding: "10px 0",
+                            display: "flex", alignItems: "center", gap: 0, padding: "10px 8px 10px 0",
                             cursor: "pointer", borderRadius: 6, transition: "all 0.15s",
                             background: rowActive ? "rgba(193,59,64,0.10)" : isSel ? "rgba(193,59,64,0.12)" : isBkp ? B.bkpBg : isHov ? "rgba(193,59,64,0.04)" : dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
                             borderLeft: rowActive ? `3px solid ${B.cancelRed}` : isSel ? `3px solid ${B.red}` : "3px solid transparent",
                             opacity: (rowActive || isSel) ? 1 : isMaxed ? 0.85 : 1,
                             position: "relative", overflow: "visible", zIndex: rowHasAssigning ? 100 : "auto",
+                            minWidth: "fit-content",
                           }}
                         >
                           {/* Col A: Driver number */}
@@ -2222,7 +2224,15 @@
                                 {d.hosStatus.replace("_", " ")}
                               </div>
                             ) : (
-                              <span style={{ fontSize: 10, color: B.dim }}>—</span>
+                              <div style={{
+                                display: "inline-flex", alignItems: "center", gap: 3,
+                                padding: "3px 8px", borderRadius: 5, fontSize: 9, fontWeight: 700,
+                                textTransform: "uppercase", letterSpacing: 0.3,
+                                background: isMaxed ? "rgba(193,59,64,0.08)" : isBkp ? B.bkpBg : "rgba(102,187,106,0.06)",
+                                color: isMaxed ? B.cancelRed : isBkp ? B.bkpL : B.greenL,
+                              }}>
+                                {isMaxed ? "FULL" : isBkp ? "BACKUP" : `${d.blockCount}/${MAX_BLOCKS_PER_WEEK}`}
+                              </div>
                             )}
                           </div>
 
@@ -2248,7 +2258,7 @@
                             const seatLabel = blk.truckLabel ? blk.truckLabel.split("_").slice(-1)[0] : "";
 
                             return (
-                              <div key={`${blk.blockId}-${blk.isBackupBlock ? 'bkp' : 'own'}`} style={{ width: 120, flexShrink: 0, position: "relative", zIndex: isAssigning ? 100 : 1 }}>
+                              <div key={`${blk.blockId}-${blk.isBackupBlock ? 'bkp' : 'own'}`} style={{ width: 130, flexShrink: 0, position: "relative", zIndex: isAssigning ? 100 : 1 }}>
                                 {blk.isBackupBlock ? (
                                   // Backup block — show with purple accent, non-cancellable
                                   <div style={{
@@ -2343,7 +2353,7 @@
                             const suggestedBlocks = isSuggesting ? getSuggestedBlocks(d.id) : [];
 
                             return (
-                              <div key="suggest" style={{ width: 120, flexShrink: 0, position: "relative", zIndex: isSuggesting ? 100 : 1 }}
+                              <div key="suggest" style={{ width: 100, flexShrink: 0, position: "relative", zIndex: isSuggesting ? 100 : 1 }}
                                 title={suggestedTime ? `Suggested next block: ${suggestedTime}\nClick to see available blocks` : "Click to see available blocks"}>
                                 <div
                                   onClick={(e) => { e.stopPropagation(); setSuggestingFor(isSuggesting ? null : d.id); }}
@@ -2483,7 +2493,7 @@
               </svg>
             )}
 
-            <div style={{ flex: csvRows ? "0 0 220px" : "0 0 150px", display: "flex", flexDirection: "column", zIndex: 2, paddingRight: 8 }}>
+            <div style={{ flex: "0 0 150px", display: "flex", flexDirection: "column", zIndex: 2, paddingRight: 8 }}>
               <div style={{
                 height: csvRows ? HEADER_H + 20 : HEADER_H, display: "flex", flexDirection: "column", justifyContent: "center", gap: 4,
                 borderBottom: `1px solid ${B.bdr}`, boxSizing: "border-box", padding: "2px 4px",
