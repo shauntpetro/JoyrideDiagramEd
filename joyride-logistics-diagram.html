@@ -838,8 +838,9 @@
     }
 
     function scoreDriver(driver, block, assignedCount, profiles) {
-      const WEIGHTS = { startTime: 0.4, cycle: 0.3, balance: 0.2, proximity: 0.1 };
-      // Start time match — distance to nearest preferred window
+      const WEIGHTS = { startTime: 0.50, cycle: 0.20, balance: 0.20, proximity: 0.10 };
+
+      // ── Start time match (Gaussian + consistency + cluster weight) ──
       let startScore = 0;
       const blockHour = (() => {
         if (!block.blockStart) return null;
@@ -850,23 +851,35 @@
       })();
       if (blockHour !== null) {
         const windows = getPreferredWindows(profiles[driver.label], driver);
+        const totalStarts = (driver.blockStartHours || []).length || 1;
         if (windows.length > 0) {
-          let minDelta = 24;
+          let bestWindowScore = 0;
           windows.forEach(w => {
             const diff = Math.min(Math.abs(blockHour - w.center), 24 - Math.abs(blockHour - w.center));
-            if (diff < minDelta) minDelta = diff;
+            // Gaussian decay: e^(-(delta^2)/(2*sigma^2)) where sigma adapts to driver consistency
+            // Consistent driver (std<1h) → tight sigma=1.5, varied driver → wider sigma=3
+            const consistency = driver.shiftConsistency || 50;
+            const sigma = consistency >= 80 ? 1.5 : consistency >= 50 ? 2.5 : 3.5;
+            const gaussian = Math.exp(-(diff * diff) / (2 * sigma * sigma));
+            // Cluster weight: larger clusters (more starts at this time) get higher confidence
+            const clusterWeight = Math.min(w.count / totalStarts + 0.3, 1.0);
+            const windowScore = gaussian * clusterWeight;
+            if (windowScore > bestWindowScore) bestWindowScore = windowScore;
           });
-          startScore = Math.max(0, (6 - minDelta) / 6);
+          startScore = bestWindowScore;
         } else {
-          startScore = 0.3; // No preference data — neutral score
+          startScore = 0.2; // No preference data — low neutral score
         }
       }
-      // Cycle capacity
+
+      // ── Cycle capacity ──
       const cycleHours = driver.hosSource ? (driver.hosCycleRemaining || 0) / 60 : (driver.cycleRemaining || 70);
       const cycleScore = Math.min(cycleHours / 70, 1);
-      // Load balance — prefer drivers with fewer blocks
+
+      // ── Load balance — prefer drivers with fewer blocks ──
       const balanceScore = Math.max(0, (3 - assignedCount) / 3);
-      // Facility proximity
+
+      // ── Facility proximity ──
       let proxScore = 0;
       if (driver.facilities && block.trips) {
         const driverFacs = new Set(driver.facilities.map(f => f.toLowerCase()));
@@ -876,6 +889,7 @@
         blockFacs.forEach(f => { if (driverFacs.has(f)) shared++; });
         proxScore = blockFacs.size > 0 ? shared / blockFacs.size : 0;
       }
+
       return (startScore * WEIGHTS.startTime) + (cycleScore * WEIGHTS.cycle) + (balanceScore * WEIGHTS.balance) + (proxScore * WEIGHTS.proximity);
     }
 
