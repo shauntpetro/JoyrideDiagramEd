@@ -1477,7 +1477,7 @@
       const [scheduleRegion, setScheduleRegion] = useState("ALL");
       const [scheduleRegions, setScheduleRegions] = useState([]);
       const [reassigningBlock, setReassigningBlock] = useState(null);
-      const [dragSource, setDragSource] = useState(null); // { driverId, blockIdx } or { fromUnassigned, blockId }
+      const [dragSource, setDragSource] = useState(null); // { driverId, blockId, block } or { fromUnassigned, blockId, block }
 
       // Samsara ELD state
       const [samsaraConnected, setSamsaraConnected] = useState(false);
@@ -2605,27 +2605,25 @@
                                   const getSuggestionsForDriver = () => {
                                     if (!isSuggesting) return [];
                                     const parseTFn = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
-                                    const driverWindows = (proposedSchedule[d.id] || []).map(b => [
-                                      b.startMs || parseTFn(b.blockStart),
-                                      b.endMs || parseTFn(b.blockEnd),
-                                    ]);
+                                    const existingWins = (proposedSchedule[d.id] || []).map(b => {
+                                      const pT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                                      return [b.startMs || pT(b.blockStart), b.endMs || pT(b.blockEnd)];
+                                    });
                                     return unassignedBlocks
                                       .filter(ub => {
-                                        // Same domicile (match region from Operator ID)
+                                        // Same domicile required
                                         const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || "";
                                         const dDom = d.domicile || "";
                                         if (ubDom && dDom && ubDom !== dDom) return false;
-                                        // 10h rest check — use pre-parsed ms if available, else parse string
+                                        // 10h rest check
                                         const parseT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
                                         const bs = ub.startMs || parseT(ub.blockStart);
                                         const be = ub.endMs || parseT(ub.blockEnd);
                                         if (bs === Infinity) return true;
-                                        const effectiveEnd = (be && be !== Infinity) ? be : bs + 36*3600000;
-                                        if (driverWindows.length === 0) return true;
-                                        // Rest: 10h after 1st block, 34h after 2nd (before 3rd)
-                                        const numExisting = driverWindows.length;
-                                        const reqRest = numExisting >= 2 ? 34*3600000 : 10*3600000;
-                                        return driverWindows.every(([s, e]) => {
+                                        const effectiveEnd = (be && be !== Infinity) ? be : bs + 37*3600000;
+                                        if (existingWins.length === 0) return true;
+                                        const reqRest = 10*3600000;
+                                        return existingWins.every(([s, e]) => {
                                           const existEnd = (e && e !== Infinity) ? e : s + 37*3600000;
                                           return bs >= existEnd + reqRest || effectiveEnd <= s - reqRest;
                                         });
@@ -2642,7 +2640,7 @@
                                         return { ...ub, timeScore };
                                       })
                                       .sort((a, b) => b.timeScore - a.timeScore)
-                                      .slice(0, 8);
+                                      .slice(0, 12);
                                   };
                                   const suggestions = getSuggestionsForDriver();
                                   return (
@@ -2652,22 +2650,18 @@
                                       onDrop={(e) => {
                                         e.preventDefault();
                                         e.currentTarget.style.outline = "none";
-                                        if (!dragSource) return;
+                                        if (!dragSource || !dragSource.block) return;
                                         const newSchedule = { ...proposedSchedule };
-                                        let movedBlock = null;
+                                        const movedBlock = { ...dragSource.block, matchType: "drag" };
+                                        // Remove from source
                                         if (dragSource.fromUnassigned) {
-                                          movedBlock = unassignedBlocks.find(b => b.blockId === dragSource.blockId);
-                                          if (movedBlock) setUnassignedBlocks(prev => prev.filter(b => b.blockId !== dragSource.blockId));
+                                          setUnassignedBlocks(prev => prev.filter(b => b.blockId !== dragSource.blockId));
                                         } else {
-                                          const fromBlocks = [...(newSchedule[dragSource.driverId] || [])];
-                                          movedBlock = fromBlocks[dragSource.blockIdx];
-                                          fromBlocks.splice(dragSource.blockIdx, 1);
-                                          newSchedule[dragSource.driverId] = fromBlocks;
+                                          newSchedule[dragSource.driverId] = (newSchedule[dragSource.driverId] || []).filter(b => b.blockId !== dragSource.blockId);
                                         }
-                                        if (movedBlock) {
-                                          newSchedule[d.id] = [...(newSchedule[d.id] || []), { ...movedBlock, matchType: "drag" }];
-                                          setProposedSchedule(newSchedule);
-                                        }
+                                        // Add to this driver
+                                        newSchedule[d.id] = [...(newSchedule[d.id] || []), movedBlock];
+                                        setProposedSchedule(newSchedule);
                                         setDragSource(null);
                                       }}
                                     >
@@ -2733,46 +2727,37 @@
                                     onDrop={(e) => {
                                       e.preventDefault();
                                       e.currentTarget.style.outline = "none";
-                                      if (!dragSource || (dragSource.driverId === d.id && dragSource.blockIdx === idx)) return;
+                                      if (!dragSource || !dragSource.block) return;
+                                      if (dragSource.driverId === d.id && dragSource.blockId === blk.blockId) return; // same block
                                       const newSchedule = { ...proposedSchedule };
-                                      // Get the dragged block
-                                      let movedBlock = null;
+                                      const draggedBlock = { ...dragSource.block, matchType: "drag" };
+                                      const displacedBlock = { ...blk, matchType: "drag" };
+                                      // Remove dragged block from source
                                       if (dragSource.fromUnassigned) {
-                                        movedBlock = unassignedBlocks.find(b => b.blockId === dragSource.blockId);
-                                        if (movedBlock) setUnassignedBlocks(prev => prev.filter(b => b.blockId !== dragSource.blockId));
+                                        setUnassignedBlocks(prev => prev.filter(b => b.blockId !== dragSource.blockId));
                                       } else {
-                                        const fromBlocks = [...(newSchedule[dragSource.driverId] || [])];
-                                        movedBlock = fromBlocks[dragSource.blockIdx];
-                                        fromBlocks.splice(dragSource.blockIdx, 1);
-                                        newSchedule[dragSource.driverId] = fromBlocks;
+                                        newSchedule[dragSource.driverId] = (newSchedule[dragSource.driverId] || []).filter(b => b.blockId !== dragSource.blockId);
                                       }
-                                      if (movedBlock) {
-                                        // Swap: move current block to source position or unassigned
-                                        const currentBlock = blk;
-                                        const toBlocks = [...(newSchedule[d.id] || [])];
-                                        // Remove current block from this driver
-                                        const currentIdx = toBlocks.findIndex(b => b.blockId === currentBlock.blockId);
-                                        if (currentIdx >= 0) toBlocks.splice(currentIdx, 1);
-                                        // Add dragged block
-                                        toBlocks.push({ ...movedBlock, matchType: "drag" });
-                                        newSchedule[d.id] = toBlocks;
-                                        // Put displaced block back to source driver or unassigned
-                                        if (dragSource.fromUnassigned) {
-                                          setUnassignedBlocks(prev => [...prev, currentBlock]);
-                                        } else if (dragSource.driverId !== d.id) {
-                                          const srcBlocks = [...(newSchedule[dragSource.driverId] || [])];
-                                          srcBlocks.push({ ...currentBlock, matchType: "drag" });
-                                          newSchedule[dragSource.driverId] = srcBlocks;
-                                        }
-                                        setProposedSchedule(newSchedule);
+                                      // Remove displaced block from this driver, add dragged block
+                                      newSchedule[d.id] = (newSchedule[d.id] || []).filter(b => b.blockId !== blk.blockId);
+                                      newSchedule[d.id].push(draggedBlock);
+                                      // Put displaced block to source driver (swap) or unassigned
+                                      if (dragSource.fromUnassigned) {
+                                        setUnassignedBlocks(prev => [...prev, displacedBlock]);
+                                      } else if (dragSource.driverId !== d.id) {
+                                        newSchedule[dragSource.driverId] = [...(newSchedule[dragSource.driverId] || []), displacedBlock];
+                                      } else {
+                                        // Same driver, different slot — just swap within
+                                        newSchedule[d.id].push(displacedBlock);
                                       }
+                                      setProposedSchedule(newSchedule);
                                       setDragSource(null);
                                     }}
                                   >
                                     <div
                                       draggable
                                       onDragStart={(e) => {
-                                        setDragSource({ driverId: d.id, blockIdx: idx });
+                                        setDragSource({ driverId: d.id, blockId: blk.blockId, block: blk });
                                         e.dataTransfer.effectAllowed = "move";
                                         e.currentTarget.style.opacity = "0.5";
                                       }}
@@ -2859,7 +2844,7 @@
                           <div key={blk.blockId}
                             draggable
                             onDragStart={(e) => {
-                              setDragSource({ fromUnassigned: true, blockId: blk.blockId });
+                              setDragSource({ fromUnassigned: true, blockId: blk.blockId, block: blk });
                               e.dataTransfer.effectAllowed = "move";
                               e.currentTarget.style.opacity = "0.5";
                             }}
