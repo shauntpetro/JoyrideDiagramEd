@@ -837,11 +837,16 @@
       return clusters;
     }
 
-    function scoreDriver(driver, block, assignedCount, profiles) {
-      const WEIGHTS = { startTime: 0.50, cycle: 0.20, balance: 0.20, proximity: 0.10 };
+    const MAX_START_DELTA = 6; // Hard cutoff: ±6h from any known start window
 
-      // ── Start time match (Gaussian + consistency + cluster weight) ──
+    function scoreDriver(driver, block, assignedCount, profiles) {
+      const WEIGHTS = { startTime: 0.55, cycle: 0.15, balance: 0.20, proximity: 0.10 };
+
+      // ── Start time match ──
+      // Strategy: use driver's ACTUAL block start hours from CSV as ground truth.
+      // Hard cutoff at ±6h — if no window is within 6h, return -1 (reject).
       let startScore = 0;
+      let minDelta = 24; // track closest delta for hard cutoff check
       const blockHour = (() => {
         if (!block.blockStart) return null;
         const parts = block.blockStart.split(" ");
@@ -850,25 +855,50 @@
         return isNaN(h) ? null : h + (m || 0) / 60;
       })();
       if (blockHour !== null) {
+        // Use raw start hours directly — every historical block start is a data point
+        const rawHours = driver.blockStartHours || [];
         const windows = getPreferredWindows(profiles[driver.label], driver);
-        const totalStarts = (driver.blockStartHours || []).length || 1;
-        if (windows.length > 0) {
-          let bestWindowScore = 0;
+        const totalStarts = rawHours.length || 1;
+
+        if (rawHours.length > 0) {
+          // Compare against EVERY individual historical start hour, not just cluster centers
+          // This captures the actual spread of the driver's schedule
+          let bestScore = 0;
+          rawHours.forEach(h => {
+            const diff = Math.min(Math.abs(blockHour - h), 24 - Math.abs(blockHour - h));
+            if (diff < minDelta) minDelta = diff;
+          });
+          // Also check cluster centers (accounts for profile history)
           windows.forEach(w => {
             const diff = Math.min(Math.abs(blockHour - w.center), 24 - Math.abs(blockHour - w.center));
-            // Gaussian decay: e^(-(delta^2)/(2*sigma^2)) where sigma adapts to driver consistency
-            // Consistent driver (std<1h) → tight sigma=1.5, varied driver → wider sigma=3
+            if (diff < minDelta) minDelta = diff;
+          });
+
+          // ── HARD CUTOFF: reject if > 6h from any known start ──
+          if (minDelta > MAX_START_DELTA) return -1;
+
+          // Score using Gaussian on closest window, with consistency & cluster bonuses
+          windows.forEach(w => {
+            const diff = Math.min(Math.abs(blockHour - w.center), 24 - Math.abs(blockHour - w.center));
+            if (diff > MAX_START_DELTA) return; // skip windows outside 6h
             const consistency = driver.shiftConsistency || 50;
             const sigma = consistency >= 80 ? 1.5 : consistency >= 50 ? 2.5 : 3.5;
             const gaussian = Math.exp(-(diff * diff) / (2 * sigma * sigma));
-            // Cluster weight: larger clusters (more starts at this time) get higher confidence
             const clusterWeight = Math.min(w.count / totalStarts + 0.3, 1.0);
             const windowScore = gaussian * clusterWeight;
-            if (windowScore > bestWindowScore) bestWindowScore = windowScore;
+            if (windowScore > bestScore) bestScore = windowScore;
           });
-          startScore = bestWindowScore;
+          startScore = bestScore;
+        } else if (windows.length > 0) {
+          // Only profile data, no CSV data — use windows but still enforce cutoff
+          windows.forEach(w => {
+            const diff = Math.min(Math.abs(blockHour - w.center), 24 - Math.abs(blockHour - w.center));
+            if (diff < minDelta) minDelta = diff;
+          });
+          if (minDelta > MAX_START_DELTA) return -1;
+          startScore = Math.max(0, (MAX_START_DELTA - minDelta) / MAX_START_DELTA);
         } else {
-          startScore = 0.2; // No preference data — low neutral score
+          startScore = 0.15; // No data at all — very low neutral
         }
       }
 
@@ -924,7 +954,8 @@
       const schedule = {}; // driverId → Block[]
 
       // Helper: try to assign a block to the best driver given constraints
-      const tryAssign = (block, domDrivers, maxBlk, minCycleHrs, restHrs) => {
+      // skipTimeCutoff=true bypasses the ±6h hard cutoff (for force/overflow passes)
+      const tryAssign = (block, domDrivers, maxBlk, minCycleHrs, restHrs, skipTimeCutoff) => {
         const blockStart = parseTime(block.blockStart);
         const blockEnd = parseTime(block.blockEnd);
         let bestDriver = null, bestScore = -1;
@@ -937,8 +968,9 @@
             if (blockStart < e + restHrs * 3600000 && blockEnd > s - restHrs * 3600000) restOk = false;
           });
           if (!restOk) return;
-          const score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
-          if (score > bestScore) { bestScore = score; bestDriver = drv; }
+          let score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
+          if (score < 0 && skipTimeCutoff) score = 0.01; // Override time cutoff rejection
+          if (score >= 0 && score > bestScore) { bestScore = score; bestDriver = drv; }
         });
         if (bestDriver) {
           bestDriver.assignedBlocks.push(block);
@@ -956,19 +988,19 @@
       // Pass 3: Relaxed (4 blocks max, 10h cycle, 8h rest) — overflow
       // Pass 4: Force (6 blocks max, 0h cycle, 4h rest) — assign everything possible
       const passes = [
-        { maxBlk: MAX_BLOCKS, minCycle: MIN_CYCLE_HOURS, rest: MIN_REST_HOURS, label: "strict" },
-        { maxBlk: MAX_BLOCKS, minCycle: 10, rest: MIN_REST_HOURS, label: "fill" },
-        { maxBlk: 4, minCycle: 0, rest: 8, label: "relaxed" },
-        { maxBlk: 5, minCycle: 0, rest: 0, label: "force" },
+        { maxBlk: MAX_BLOCKS, minCycle: MIN_CYCLE_HOURS, rest: MIN_REST_HOURS, skip: false, label: "strict" },
+        { maxBlk: MAX_BLOCKS, minCycle: 10, rest: MIN_REST_HOURS, skip: false, label: "fill" },
+        { maxBlk: 4, minCycle: 0, rest: 8, skip: true, label: "relaxed" },
+        { maxBlk: 5, minCycle: 0, rest: 0, skip: true, label: "force" },
       ];
 
       let pending = [];
-      // Initial assignment by domicile
+      // Initial assignment by domicile — strict pass with ±6h time cutoff
       Object.entries(blocksByDom).forEach(([dom, domBlocks]) => {
         const domDrivers = driversByDom[dom] || [];
         if (domDrivers.length === 0) { pending.push(...domBlocks); return; }
         domBlocks.forEach(block => {
-          if (!tryAssign(block, domDrivers, passes[0].maxBlk, passes[0].minCycle, passes[0].rest)) {
+          if (!tryAssign(block, domDrivers, passes[0].maxBlk, passes[0].minCycle, passes[0].rest, passes[0].skip)) {
             pending.push(block);
           }
         });
@@ -981,7 +1013,7 @@
         pending.forEach(block => {
           const dom = block.domicile || "UNKNOWN";
           const domDrivers = driversByDom[dom] || [];
-          if (!tryAssign(block, domDrivers, pass.maxBlk, pass.minCycle, pass.rest)) {
+          if (!tryAssign(block, domDrivers, pass.maxBlk, pass.minCycle, pass.rest, pass.skip)) {
             stillPending.push(block);
           }
         });
