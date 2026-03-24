@@ -2505,10 +2505,34 @@
                           <div style={{ flex: 1, height: 1, background: "rgba(102,187,106,0.12)" }} />
                         </div>
                         {domDrivers.map((d, dIdx) => {
-                          const driverBlocks = (proposedSchedule[d.id] || []).slice().sort((a, b) => {
-                            const parseT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
-                            return parseT(a.blockStart) - parseT(b.blockStart);
+                          // Place blocks into columns by time bucket (early/mid/late week)
+                          const rawBlocks = (proposedSchedule[d.id] || []).slice();
+                          const parseTB = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                          rawBlocks.sort((a, b) => (a.startMs || parseTB(a.blockStart)) - (b.startMs || parseTB(b.blockStart)));
+                          // Compute time boundaries from ALL schedule blocks (not just this driver)
+                          const allTimes = scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity);
+                          const minT = Math.min(...allTimes);
+                          const maxT = Math.max(...allTimes);
+                          const span = maxT - minT || 1;
+                          const boundary1 = minT + span / 3;
+                          const boundary2 = minT + 2 * span / 3;
+                          // Assign each block to a column: 0=early, 1=mid, 2=late
+                          const slots = [null, null, null]; // columns 0, 1, 2
+                          rawBlocks.forEach(blk => {
+                            const t = blk.startMs || parseTB(blk.blockStart);
+                            let col = t < boundary1 ? 0 : t < boundary2 ? 1 : 2;
+                            // If that column is taken, find nearest empty
+                            if (slots[col]) {
+                              if (col === 0 && !slots[1]) col = 1;
+                              else if (col === 0 && !slots[2]) col = 2;
+                              else if (col === 1 && !slots[2]) col = 2;
+                              else if (col === 1 && !slots[0]) col = 0;
+                              else if (col === 2 && !slots[1]) col = 1;
+                              else if (col === 2 && !slots[0]) col = 0;
+                            }
+                            if (!slots[col]) slots[col] = blk;
                           });
+                          const driverBlocks = slots; // [blk|null, blk|null, blk|null]
                           const profile = savedProfiles?.[d.label];
                           return (
                             <div key={d.id} style={{
@@ -2538,8 +2562,8 @@
                                   )}
                                 </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, fontSize: 10, color: B.dim }}>
-                                  <span style={{ fontWeight: 600, color: driverBlocks.length >= 3 ? B.green : driverBlocks.length >= 2 ? B.gold : B.dim }}>
-                                    {driverBlocks.length}/3
+                                  <span style={{ fontWeight: 600, color: driverBlocks.filter(Boolean).length >= 3 ? B.green : driverBlocks.filter(Boolean).length >= 2 ? B.gold : B.dim }}>
+                                    {driverBlocks.filter(Boolean).length}/3
                                   </span>
                                   <span>{d.cycleRemaining || 70}h cyc</span>
                                 </div>
