@@ -944,13 +944,20 @@
     }
 
     function greedySchedule(blocks, drivers, profiles, hosData) {
-      const MIN_REST_HOURS = 10;
-      const MIN_CYCLE_HOURS = 34;
+      const MIN_REST_MS = 10 * 3600000; // 10h rest between blocks
       const MAX_BLOCKS = 3;
 
-      // ═══ STEP 1: Build Operator ID → Drivers mapping from historical data ═══
-      // Each seat can have multiple drivers (primary/secondary). Track all of them.
-      const seatDrivers = {}; // seatNum → [{ driverId, count, label }] sorted by dominance
+      const parseTime = (str) => {
+        if (!str) return Infinity;
+        const parts = str.split(" ");
+        if (parts.length < 2) return Infinity;
+        const [m, d, y] = parts[0].split("/").map(Number);
+        const [h, min] = parts[1].split(":").map(Number);
+        return new Date(y, m - 1, d, h, min || 0).getTime();
+      };
+
+      // ═══ STEP 1: Build seat → drivers mapping from historical CSV ═══
+      const seatDrivers = {}; // seatNum → [{ driverId, count }] sorted by dominance
       drivers.forEach(d => {
         if (!d.blocks) return;
         const seatCounts = {};
@@ -960,161 +967,75 @@
         });
         Object.entries(seatCounts).forEach(([sn, count]) => {
           if (!seatDrivers[sn]) seatDrivers[sn] = [];
-          seatDrivers[sn].push({ driverId: d.id, count, label: d.label });
+          seatDrivers[sn].push({ driverId: d.id, count });
         });
       });
-      // Sort each seat's drivers by trip count (most dominant first)
       Object.values(seatDrivers).forEach(arr => arr.sort((a, b) => b.count - a.count));
 
-      // Build driver lookup by domicile (for fallback scoring)
-      const driversByDom = {};
+      // Build driver state trackers
+      const driverState = {}; // driverId → { assignedBlocks, windows }
+      const driverById = {};
       drivers.forEach(d => {
-        if (!d.domicile) return;
-        if (!driversByDom[d.domicile]) driversByDom[d.domicile] = [];
-        driversByDom[d.domicile].push({ ...d, assignedBlocks: [], assignedWindows: [] });
+        driverState[d.id] = { assignedBlocks: [], windows: [] };
+        driverById[d.id] = d;
       });
-      // Also build driverId → driversByDom entry for quick lookup
-      const driverLookup = {};
-      Object.values(driversByDom).flat().forEach(d => { driverLookup[d.id] = d; });
-      // Group blocks by domicile (extracted from Operator ID)
-      const blocksByDom = {};
-      blocks.forEach(b => {
-        const dom = b.domicile || "UNKNOWN";
-        if (!blocksByDom[dom]) blocksByDom[dom] = [];
-        blocksByDom[dom].push(b);
-      });
-      // Sort blocks in each domicile by start time
-      const parseTime = (str) => {
-        if (!str) return Infinity;
-        const parts = str.split(" ");
-        if (parts.length < 2) return Infinity;
-        const [m, d, y] = parts[0].split("/").map(Number);
-        const [h, min] = parts[1].split(":").map(Number);
-        return new Date(y, m - 1, d, h, min || 0).getTime();
-      };
-      Object.values(blocksByDom).forEach(arr => arr.sort((a, b) => parseTime(a.blockStart) - parseTime(b.blockStart)));
+
       const schedule = {}; // driverId → Block[]
+      const unassigned = []; // blocks that couldn't be matched
 
-      // Helper: try to assign a block to the best driver given constraints
-      // skipTimeCutoff=true bypasses the ±6h hard cutoff (for force/overflow passes)
-      const tryAssign = (block, domDrivers, maxBlk, minCycleHrs, restHrs, skipTimeCutoff) => {
-        const blockStart = parseTime(block.blockStart);
-        const blockEnd = parseTime(block.blockEnd);
-        let bestDriver = null, bestScore = -1;
-        domDrivers.forEach(drv => {
-          if (drv.assignedBlocks.length >= maxBlk) return;
-          const cycleHrs = drv.hosSource ? (drv.hosCycleRemaining || 0) / 60 : (drv.cycleRemaining || 70);
-          if (cycleHrs < minCycleHrs) return;
-          let restOk = true;
-          drv.assignedWindows.forEach(([s, e]) => {
-            if (blockStart < e + restHrs * 3600000 && blockEnd > s - restHrs * 3600000) restOk = false;
-          });
-          if (!restOk) return;
-          let score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
-          if (score < 0 && skipTimeCutoff) score = 0.01; // Override time cutoff rejection
-          if (score >= 0 && score > bestScore) { bestScore = score; bestDriver = drv; }
-        });
-        if (bestDriver) {
-          bestDriver.assignedBlocks.push(block);
-          bestDriver.assignedWindows.push([blockStart, blockEnd]);
-          if (!schedule[bestDriver.id]) schedule[bestDriver.id] = [];
-          schedule[bestDriver.id].push({ ...block, score: bestScore });
-          return true;
-        }
-        return false;
+      // Helper: check if block fits driver's schedule (10h rest)
+      const fitsSchedule = (driverId, block) => {
+        const bs = parseTime(block.blockStart);
+        const be = parseTime(block.blockEnd);
+        if (bs === Infinity) return true; // no time data, allow
+        return driverState[driverId].windows.every(([s, e]) =>
+          bs >= e + MIN_REST_MS || be <= s - MIN_REST_MS
+        );
       };
 
-      // ═══ PASS 0: OPERATOR ID DIRECT ASSIGNMENT (primary key) ═══
-      // Group new blocks by their Operator ID seat number
+      // Helper: assign block to driver
+      const assignBlock = (driverId, block, matchType) => {
+        const bs = parseTime(block.blockStart);
+        const be = parseTime(block.blockEnd);
+        driverState[driverId].assignedBlocks.push(block);
+        driverState[driverId].windows.push([bs, be]);
+        if (!schedule[driverId]) schedule[driverId] = [];
+        schedule[driverId].push({ ...block, matchType });
+      };
+
+      // ═══ STEP 2: ASSIGN BY OPERATOR ID (exclusive primary match) ═══
+      // Group blocks by seat number
       const blocksBySeat = {};
-      const allBlocks = Object.values(blocksByDom).flat();
-      allBlocks.forEach(block => {
+      blocks.forEach(block => {
         const sn = (block.operatorId || "").split("_").pop();
         if (!blocksBySeat[sn]) blocksBySeat[sn] = [];
         blocksBySeat[sn].push(block);
       });
-      // Sort each seat's blocks chronologically
+      // Sort chronologically within each seat
       Object.values(blocksBySeat).forEach(arr => arr.sort((a, b) => parseTime(a.blockStart) - parseTime(b.blockStart)));
 
-      let pending = [];
-
-      // For each seat, distribute blocks round-robin to drivers who historically run it
       Object.entries(blocksBySeat).forEach(([seatNum, seatBlocks]) => {
-        const candidates = (seatDrivers[seatNum] || []).map(c => driverLookup[c.driverId]).filter(Boolean);
+        const candidates = (seatDrivers[seatNum] || []).map(c => c.driverId);
+        if (candidates.length === 0) { unassigned.push(...seatBlocks); return; }
 
-        if (candidates.length === 0) {
-          pending.push(...seatBlocks);
-          return;
-        }
-
-        // Round-robin: give each candidate driver up to MAX_BLOCKS from this seat
-        let driverIdx = 0;
+        // Distribute blocks round-robin to seat's drivers, enforcing rest + max 3
+        let idx = 0;
         seatBlocks.forEach(block => {
-          const blockStart = parseTime(block.blockStart);
-          const blockEnd = parseTime(block.blockEnd);
           let assigned = false;
-
-          // Try each candidate starting from current round-robin position
-          for (let attempts = 0; attempts < candidates.length; attempts++) {
-            const drv = candidates[(driverIdx + attempts) % candidates.length];
-            if (drv.assignedBlocks.length >= MAX_BLOCKS) continue;
-
-            const score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
-            const finalScore = Math.max(score >= 0 ? score : 0.5, 0.7);
-            drv.assignedBlocks.push(block);
-            drv.assignedWindows.push([blockStart, blockEnd]);
-            if (!schedule[drv.id]) schedule[drv.id] = [];
-            schedule[drv.id].push({ ...block, score: finalScore, seatMatch: true });
-            driverIdx = (driverIdx + attempts + 1) % candidates.length;
+          for (let a = 0; a < candidates.length; a++) {
+            const did = candidates[(idx + a) % candidates.length];
+            if (driverState[did].assignedBlocks.length >= MAX_BLOCKS) continue;
+            if (!fitsSchedule(did, block)) continue;
+            assignBlock(did, block, "seat");
+            idx = (idx + a + 1) % candidates.length;
             assigned = true;
             break;
           }
-          if (!assigned) pending.push(block);
+          if (!assigned) unassigned.push(block);
         });
       });
 
-      // ═══ PASSES 1-4: Score-based assignment for remaining blocks ═══
-      const passes = [
-        { maxBlk: MAX_BLOCKS, minCycle: MIN_CYCLE_HOURS, rest: MIN_REST_HOURS, skip: false, label: "strict" },
-        { maxBlk: MAX_BLOCKS, minCycle: 10, rest: MIN_REST_HOURS, skip: false, label: "fill" },
-        { maxBlk: 4, minCycle: 0, rest: 8, skip: true, label: "relaxed" },
-        { maxBlk: 5, minCycle: 0, rest: 0, skip: true, label: "force" },
-      ];
-
-      for (let p = 0; p < passes.length && pending.length > 0; p++) {
-        const pass = passes[p];
-        const stillPending = [];
-        pending.forEach(block => {
-          const dom = block.domicile || "UNKNOWN";
-          const domDrivers = driversByDom[dom] || [];
-          if (!tryAssign(block, domDrivers, pass.maxBlk, pass.minCycle, pass.rest, pass.skip)) {
-            stillPending.push(block);
-          }
-        });
-        pending = stillPending;
-      }
-
-      // Final round-robin: any remaining blocks get force-assigned to driver with fewest blocks in that domicile
-      if (pending.length > 0) {
-        const finalUnassigned = [];
-        pending.forEach(block => {
-          const dom = block.domicile || "UNKNOWN";
-          const domDrivers = driversByDom[dom] || [];
-          if (domDrivers.length === 0) { finalUnassigned.push(block); return; }
-          // Pick driver with fewest blocks
-          let minDriver = domDrivers[0];
-          domDrivers.forEach(drv => { if (drv.assignedBlocks.length < minDriver.assignedBlocks.length) minDriver = drv; });
-          minDriver.assignedBlocks.push(block);
-          const blockStart = parseTime(block.blockStart);
-          const blockEnd = parseTime(block.blockEnd);
-          minDriver.assignedWindows.push([blockStart, blockEnd]);
-          if (!schedule[minDriver.id]) schedule[minDriver.id] = [];
-          schedule[minDriver.id].push({ ...block, score: 0 });
-        });
-        pending = finalUnassigned;
-      }
-
-      return { schedule, unassigned: pending };
+      return { schedule, unassigned };
     }
 
     // Parse schedule CSV into blocks with domicile extraction
@@ -2525,15 +2446,106 @@
                               {/* Blocks 1, 2, 3 */}
                               {[0, 1, 2].map(idx => {
                                 const blk = driverBlocks[idx];
-                                if (!blk) return (
-                                  <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px" }}>
-                                    <div style={{
-                                      width: "100%", borderRadius: 8, padding: "10px 6px", textAlign: "center",
-                                      border: `1.5px dashed rgba(102,187,106,0.15)`, background: "rgba(102,187,106,0.02)",
-                                      color: B.dim, fontSize: 10,
-                                    }}>—</div>
-                                  </div>
-                                );
+                                const suggestKey = `suggest-${d.id}-${idx}`;
+                                const isSuggesting = reassigningBlock === suggestKey;
+                                if (!blk) {
+                                  // ── Vacant slot: show suggest dropdown with best-matching unassigned blocks ──
+                                  // Compute which unassigned blocks fit this driver
+                                  const getSuggestionsForDriver = () => {
+                                    if (!isSuggesting) return [];
+                                    const driverWindows = (proposedSchedule[d.id] || []).map(b => {
+                                      const parseT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                                      return [parseT(b.blockStart), parseT(b.blockEnd)];
+                                    });
+                                    return unassignedBlocks
+                                      .filter(ub => {
+                                        // Same domicile (match region from Operator ID)
+                                        const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || "";
+                                        const dDom = d.domicile || "";
+                                        if (ubDom && dDom && ubDom !== dDom) return false;
+                                        // 10h rest check
+                                        const parseT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                                        const bs = parseT(ub.blockStart), be = parseT(ub.blockEnd);
+                                        if (bs === Infinity) return true;
+                                        // If block end is unknown, use start + 36h estimate
+                                        const effectiveEnd = be !== Infinity ? be : bs + 36*3600000;
+                                        return driverWindows.every(([s, e]) => {
+                                          const existEnd = e !== Infinity ? e : s + 36*3600000;
+                                          return bs >= existEnd + 10*3600000 || effectiveEnd <= s - 10*3600000;
+                                        });
+                                      })
+                                      .map(ub => {
+                                        // Score by start time match
+                                        const blockHour = (() => { if (!ub.blockStart) return null; const p = ub.blockStart.split(" "); if (p.length < 2) return null; const [h,m]=p[1].split(":").map(Number); return isNaN(h)?null:h+(m||0)/60; })();
+                                        let timeScore = 0;
+                                        if (blockHour !== null && d.blockStartHours && d.blockStartHours.length > 0) {
+                                          let minDelta = 24;
+                                          d.blockStartHours.forEach(h => { const diff = Math.min(Math.abs(blockHour-h), 24-Math.abs(blockHour-h)); if (diff < minDelta) minDelta = diff; });
+                                          timeScore = minDelta <= 6 ? Math.round((1 - minDelta/6) * 100) : 0;
+                                        }
+                                        return { ...ub, timeScore };
+                                      })
+                                      .sort((a, b) => b.timeScore - a.timeScore)
+                                      .slice(0, 8);
+                                  };
+                                  const suggestions = getSuggestionsForDriver();
+                                  return (
+                                    <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative", zIndex: isSuggesting ? 100 : 1 }}>
+                                      <div
+                                        onClick={(e) => { e.stopPropagation(); setReassigningBlock(isSuggesting ? null : suggestKey); }}
+                                        style={{
+                                          width: "100%", borderRadius: 8, padding: "10px 6px", textAlign: "center", cursor: "pointer",
+                                          border: isSuggesting ? `2px solid ${B.green}` : `1.5px dashed rgba(102,187,106,0.25)`,
+                                          background: isSuggesting ? "rgba(102,187,106,0.08)" : "rgba(102,187,106,0.02)",
+                                          transition: "all 0.15s",
+                                        }}>
+                                        <div style={{ fontSize: 16, color: B.green, fontWeight: 300, lineHeight: 1 }}>+</div>
+                                        <div style={{ fontSize: 7, color: B.greenL, fontWeight: 600, marginTop: 2 }}>SUGGEST</div>
+                                      </div>
+                                      {/* Suggestion dropdown */}
+                                      {isSuggesting && (
+                                        <div onClick={(e) => e.stopPropagation()} style={{
+                                          position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)",
+                                          marginTop: 4, background: B.card, border: `1.5px solid ${B.green}`,
+                                          borderRadius: 10, padding: 8, zIndex: 500, minWidth: 280, maxHeight: 260, overflowY: "auto",
+                                          boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+                                        }}>
+                                          <div style={{ fontSize: 9, fontWeight: 700, color: B.greenL, marginBottom: 6, textAlign: "center", textTransform: "uppercase" }}>
+                                            Available Blocks — Best Match
+                                          </div>
+                                          {suggestions.length === 0 ? (
+                                            <div style={{ fontSize: 10, color: B.dim, textAlign: "center", padding: 12 }}>No blocks fit this driver's schedule</div>
+                                          ) : suggestions.map((sb, si) => (
+                                            <div key={sb.blockId} onClick={() => {
+                                              const newSchedule = { ...proposedSchedule };
+                                              newSchedule[d.id] = [...(newSchedule[d.id] || []), { ...sb, matchType: "suggest" }];
+                                              setProposedSchedule(newSchedule);
+                                              setUnassignedBlocks(prev => prev.filter(b => b.blockId !== sb.blockId));
+                                              setReassigningBlock(null);
+                                            }} style={{
+                                              display: "flex", alignItems: "center", gap: 8, padding: "6px 8px", borderRadius: 6,
+                                              cursor: "pointer", fontSize: 10, transition: "all 0.1s", marginBottom: 2,
+                                              background: si === 0 ? "rgba(102,187,106,0.06)" : "transparent",
+                                              borderLeft: si === 0 ? `3px solid ${B.green}` : "3px solid transparent",
+                                            }}
+                                            onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(102,187,106,0.08)")}
+                                            onMouseLeave={(e) => (e.currentTarget.style.background = si === 0 ? "rgba(102,187,106,0.06)" : "transparent")}
+                                            >
+                                              <div style={{ flex: 1 }}>
+                                                <div style={{ fontWeight: 700, color: B.text }}>{sb.blockId.slice(0, 8)} <span style={{ fontWeight: 400, color: B.dim, fontSize: 8 }}>{sb.operatorId?.split("_").pop()}</span></div>
+                                                <div style={{ fontSize: 8, color: B.muted, marginTop: 1 }}>{formatBlockTime(sb.blockStart)} → {formatBlockTime(sb.blockEnd)}</div>
+                                              </div>
+                                              <div style={{ textAlign: "right" }}>
+                                                <div style={{ fontSize: 11, fontWeight: 700, color: sb.timeScore >= 80 ? B.green : sb.timeScore >= 50 ? B.gold : B.dim }}>{sb.timeScore}%</div>
+                                                <div style={{ fontSize: 7, color: B.dim }}>time fit</div>
+                                              </div>
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                }
                                 return (
                                   <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative" }}>
                                     <div
@@ -2561,11 +2573,9 @@
                                           <span style={{ color: B.gold }}>{formatBlockTime(blk.blockEnd)}</span>
                                         </div>
                                       )}
-                                      {blk.score !== undefined && (
-                                        <div style={{ fontSize: 7, color: B.dim, marginTop: 2 }}>
-                                          match: {Math.round(blk.score * 100)}%
-                                        </div>
-                                      )}
+                                      <div style={{ fontSize: 7, color: blk.matchType === "seat" ? B.green : B.dim, marginTop: 2, fontWeight: 600 }}>
+                                        {blk.matchType === "seat" ? "SEAT MATCH" : blk.matchType === "suggest" ? "SUGGESTED" : `match: ${Math.round((blk.score || 0) * 100)}%`}
+                                      </div>
                                     </div>
                                     {/* Reassign dropdown */}
                                     {reassigningBlock === `${d.id}-${idx}` && (
