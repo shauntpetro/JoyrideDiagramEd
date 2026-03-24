@@ -1055,29 +1055,75 @@
           if (score > 0) candidates.push({ idx, blk, score });
         });
 
-        // Sort by score descending, then chronologically for ties
-        candidates.sort((a, b) => b.score - a.score || a.blk.startMs - b.blk.startMs);
+        // Sort chronologically first, then by score for ties within same day
+        candidates.sort((a, b) => a.blk.startMs - b.blk.startMs || b.score - a.score);
 
-        // Pick top 3, re-checking rest after each pick (greedy)
+        // ── Pick 3 blocks SPREAD across the date range ──
+        // Divide candidates into 3 time windows (early/mid/late) and pick best from each
+        const validTimes = candidates.filter(c => c.blk.startMs !== Infinity).map(c => c.blk.startMs);
+        const minTime = Math.min(...validTimes);
+        const maxTime = Math.max(...validTimes);
+        const span = maxTime - minTime || 1;
+        const thirds = [minTime, minTime + span / 3, minTime + 2 * span / 3, maxTime + 1];
+
+        // Sort each third by score (best first), then pick one from each
+        const buckets = [[], [], []];
+        candidates.forEach(c => {
+          const t = c.blk.startMs;
+          if (t === Infinity) { buckets[2].push(c); return; }
+          if (t < thirds[1]) buckets[0].push(c);
+          else if (t < thirds[2]) buckets[1].push(c);
+          else buckets[2].push(c);
+        });
+        buckets.forEach(b => b.sort((a, b) => b.score - a.score));
+
+        // Pick one from each bucket (best score), then fill remaining from any bucket
         let picked = 0;
         const pickedWindows = [];
-        for (const c of candidates) {
-          if (picked >= MAX_BLOCKS) break;
-          // Re-check rest against picks so far
-          const effEnd = c.blk.endMs !== Infinity ? c.blk.endMs : c.blk.startMs + 36 * 3600000;
-          const restOk = pickedWindows.every(([s, e]) => {
-            const existEnd = e !== Infinity ? e : s + 36 * 3600000;
-            return c.blk.startMs >= existEnd + MIN_REST_MS || effEnd <= s - MIN_REST_MS;
-          });
-          if (!restOk) continue;
+        const pickFromBucket = (bucket) => {
+          for (const c of bucket) {
+            if (picked >= MAX_BLOCKS) return false;
+            const effEnd = c.blk.endMs !== Infinity ? c.blk.endMs : c.blk.startMs + 36 * 3600000;
+            const restOk = pickedWindows.every(([s, e]) => {
+              const existEnd = e !== Infinity ? e : s + 36 * 3600000;
+              return c.blk.startMs >= existEnd + MIN_REST_MS || effEnd <= s - MIN_REST_MS;
+            });
+            if (!restOk) continue;
+            c._picked = true;
+            return c;
+          }
+          return null;
+        };
 
-          // Assign
+        // Helper: commit a pick to the schedule
+        const commitPick = (c) => {
           available.delete(c.idx);
           pickedWindows.push([c.blk.startMs, c.blk.endMs]);
           driverWindows[dp.id].push([c.blk.startMs, c.blk.endMs]);
           if (!schedule[dp.id]) schedule[dp.id] = [];
           const matchType = c.blk.seatNum === dp.primarySeat ? "seat" : dp.allSeats.has(c.blk.seatNum) ? "seat2" : "time";
           schedule[dp.id].push({ ...c.blk, matchType, score: c.score });
+        };
+
+        // First pass: one from each bucket (early/mid/late week)
+        for (const bucket of buckets) {
+          const pick = pickFromBucket(bucket);
+          if (pick) {
+            commitPick(pick);
+            picked++;
+          }
+        }
+        // Second pass: fill remaining from any bucket (best score first)
+        const remaining = candidates.filter(c => !c._picked).sort((a, b) => b.score - a.score);
+        for (const c of remaining) {
+          if (picked >= MAX_BLOCKS) break;
+          const effEnd = c.blk.endMs !== Infinity ? c.blk.endMs : c.blk.startMs + 36 * 3600000;
+          const restOk = pickedWindows.every(([s, e]) => {
+            const existEnd = e !== Infinity ? e : s + 36 * 3600000;
+            return c.blk.startMs >= existEnd + MIN_REST_MS || effEnd <= s - MIN_REST_MS;
+          });
+          if (!restOk) continue;
+          commitPick(c);
           picked++;
         }
       });
@@ -2508,24 +2554,26 @@
                                   // Compute which unassigned blocks fit this driver
                                   const getSuggestionsForDriver = () => {
                                     if (!isSuggesting) return [];
-                                    const driverWindows = (proposedSchedule[d.id] || []).map(b => {
-                                      const parseT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
-                                      return [parseT(b.blockStart), parseT(b.blockEnd)];
-                                    });
+                                    const parseTFn = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                                    const driverWindows = (proposedSchedule[d.id] || []).map(b => [
+                                      b.startMs || parseTFn(b.blockStart),
+                                      b.endMs || parseTFn(b.blockEnd),
+                                    ]);
                                     return unassignedBlocks
                                       .filter(ub => {
                                         // Same domicile (match region from Operator ID)
                                         const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || "";
                                         const dDom = d.domicile || "";
                                         if (ubDom && dDom && ubDom !== dDom) return false;
-                                        // 10h rest check
+                                        // 10h rest check — use pre-parsed ms if available, else parse string
                                         const parseT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
-                                        const bs = parseT(ub.blockStart), be = parseT(ub.blockEnd);
+                                        const bs = ub.startMs || parseT(ub.blockStart);
+                                        const be = ub.endMs || parseT(ub.blockEnd);
                                         if (bs === Infinity) return true;
-                                        // If block end is unknown, use start + 36h estimate
-                                        const effectiveEnd = be !== Infinity ? be : bs + 36*3600000;
+                                        const effectiveEnd = (be && be !== Infinity) ? be : bs + 36*3600000;
+                                        if (driverWindows.length === 0) return true; // no existing blocks = everything fits
                                         return driverWindows.every(([s, e]) => {
-                                          const existEnd = e !== Infinity ? e : s + 36*3600000;
+                                          const existEnd = (e && e !== Infinity) ? e : s + 36*3600000;
                                           return bs >= existEnd + 10*3600000 || effectiveEnd <= s - 10*3600000;
                                         });
                                       })
