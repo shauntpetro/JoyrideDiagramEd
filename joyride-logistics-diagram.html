@@ -944,7 +944,10 @@
     }
 
     function greedySchedule(blocks, drivers, profiles, hosData) {
-      const MIN_REST_MS = 10 * 3600000; // 10h rest between blocks
+      // Block timing: 37h block (includes 10h rest) → 10h break → 37h block → 34h break → 37h block
+      const BLOCK_DURATION_MS = 37 * 3600000;  // 37h per block
+      const REST_1_2_MS = 10 * 3600000;         // 10h break between block 1→2
+      const REST_2_3_MS = 34 * 3600000;         // 34h mandatory restart before block 3
       const MAX_BLOCKS = 3;
 
       const parseTime = (str) => {
@@ -1003,13 +1006,18 @@
       const driverWindows = {}; // driverId → [[startMs, endMs], ...]
       drivers.forEach(d => { driverWindows[d.id] = []; });
 
-      // Helper: check 10h rest
+      // Helper: check rest requirements (10h after block 1, 34h after block 2)
       const fitsWindows = (driverId, startMs, endMs) => {
         if (startMs === Infinity) return true;
-        const effEnd = endMs !== Infinity ? endMs : startMs + 36 * 3600000;
-        return (driverWindows[driverId] || []).every(([s, e]) => {
-          const existEnd = e !== Infinity ? e : s + 36 * 3600000;
-          return startMs >= existEnd + MIN_REST_MS || effEnd <= s - MIN_REST_MS;
+        const windows = driverWindows[driverId] || [];
+        const numAssigned = windows.length;
+        // Rest required depends on which block this would be:
+        // 2nd block needs 10h after 1st, 3rd block needs 34h after 2nd
+        const requiredRest = numAssigned >= 2 ? REST_2_3_MS : REST_1_2_MS;
+        const effEnd = (endMs && endMs !== Infinity) ? endMs : startMs + BLOCK_DURATION_MS;
+        return windows.every(([s, e]) => {
+          const existEnd = (e && e !== Infinity) ? e : s + BLOCK_DURATION_MS;
+          return startMs >= existEnd + requiredRest || effEnd <= s - requiredRest;
         });
       };
 
@@ -1083,10 +1091,12 @@
         const pickFromBucket = (bucket) => {
           for (const c of bucket) {
             if (picked >= MAX_BLOCKS) return false;
-            const effEnd = c.blk.endMs !== Infinity ? c.blk.endMs : c.blk.startMs + 36 * 3600000;
+            const effEnd = (c.blk.endMs && c.blk.endMs !== Infinity) ? c.blk.endMs : c.blk.startMs + BLOCK_DURATION_MS;
+            // Rest depends on pick number: 2nd pick needs 10h, 3rd needs 34h
+            const requiredRest = picked >= 2 ? REST_2_3_MS : REST_1_2_MS;
             const restOk = pickedWindows.every(([s, e]) => {
-              const existEnd = e !== Infinity ? e : s + 36 * 3600000;
-              return c.blk.startMs >= existEnd + MIN_REST_MS || effEnd <= s - MIN_REST_MS;
+              const existEnd = (e && e !== Infinity) ? e : s + BLOCK_DURATION_MS;
+              return c.blk.startMs >= existEnd + requiredRest || effEnd <= s - requiredRest;
             });
             if (!restOk) continue;
             c._picked = true;
@@ -1117,10 +1127,11 @@
         const remaining = candidates.filter(c => !c._picked).sort((a, b) => b.score - a.score);
         for (const c of remaining) {
           if (picked >= MAX_BLOCKS) break;
-          const effEnd = c.blk.endMs !== Infinity ? c.blk.endMs : c.blk.startMs + 36 * 3600000;
+          const effEnd = (c.blk.endMs && c.blk.endMs !== Infinity) ? c.blk.endMs : c.blk.startMs + BLOCK_DURATION_MS;
+          const requiredRest = picked >= 2 ? REST_2_3_MS : REST_1_2_MS;
           const restOk = pickedWindows.every(([s, e]) => {
-            const existEnd = e !== Infinity ? e : s + 36 * 3600000;
-            return c.blk.startMs >= existEnd + MIN_REST_MS || effEnd <= s - MIN_REST_MS;
+            const existEnd = (e && e !== Infinity) ? e : s + BLOCK_DURATION_MS;
+            return c.blk.startMs >= existEnd + requiredRest || effEnd <= s - requiredRest;
           });
           if (!restOk) continue;
           commitPick(c);
@@ -2514,8 +2525,10 @@
                           const minT = Math.min(...allTimes);
                           const maxT = Math.max(...allTimes);
                           const span = maxT - minT || 1;
-                          const boundary1 = minT + span / 3;
-                          const boundary2 = minT + 2 * span / 3;
+                          // Bucket boundaries based on block pattern: 37h block + 10h rest + 37h block + 34h rest + 37h block
+                          // Block 1 ~30%, Block 2 ~30%, Block 3 ~40% of the span
+                          const boundary1 = minT + span * 0.30;
+                          const boundary2 = minT + span * 0.60;
                           // Assign each block to a column: 0=early, 1=mid, 2=late
                           const slots = [null, null, null]; // columns 0, 1, 2
                           rawBlocks.forEach(blk => {
@@ -2595,10 +2608,13 @@
                                         const be = ub.endMs || parseT(ub.blockEnd);
                                         if (bs === Infinity) return true;
                                         const effectiveEnd = (be && be !== Infinity) ? be : bs + 36*3600000;
-                                        if (driverWindows.length === 0) return true; // no existing blocks = everything fits
+                                        if (driverWindows.length === 0) return true;
+                                        // Rest: 10h after 1st block, 34h after 2nd (before 3rd)
+                                        const numExisting = driverWindows.length;
+                                        const reqRest = numExisting >= 2 ? 34*3600000 : 10*3600000;
                                         return driverWindows.every(([s, e]) => {
-                                          const existEnd = (e && e !== Infinity) ? e : s + 36*3600000;
-                                          return bs >= existEnd + 10*3600000 || effectiveEnd <= s - 10*3600000;
+                                          const existEnd = (e && e !== Infinity) ? e : s + 37*3600000;
+                                          return bs >= existEnd + reqRest || effectiveEnd <= s - reqRest;
                                         });
                                       })
                                       .map(ub => {
