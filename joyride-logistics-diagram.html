@@ -366,28 +366,22 @@
           if (!added) clusters.push({ hours: [h], avg: h });
         });
 
-        // Build labels based on rules
+        // Build labels: show ALL cluster averages (never drop singletons)
+        // This ensures every distinct start window is visible and usable by the scheduler
         let preferredStartLabels = [];
 
         if (blockStartHours.length < 3) {
-          // Less than 3 blocks: show each individual start time
           if (clusters.length === 1 && clusters[0].hours.length >= 2) {
-            // All within 2h — show the cluster average as one preferred time
             preferredStartLabels = [fmtHour(clusters[0].avg)];
           } else {
-            // Different times — list each one
             preferredStartLabels = sorted.map(h => fmtHour(h));
           }
         } else {
-          // 3+ blocks: show clusters that have ≥2 starts
-          const validClusters = clusters.filter(c => c.hours.length >= 2);
-          if (validClusters.length > 0) {
-            // Show each valid cluster's average
-            preferredStartLabels = validClusters.map(c => fmtHour(c.avg));
-          } else {
-            // No cluster has ≥2 — all different times, show all
-            preferredStartLabels = sorted.map(h => fmtHour(h));
-          }
+          // 3+ blocks: show ALL clusters — larger clusters first, then singletons
+          const sortedClusters = clusters.sort((a, b) => b.hours.length - a.hours.length);
+          preferredStartLabels = sortedClusters.map(c => fmtHour(c.avg));
+          // Cap at 3 labels to avoid clutter
+          if (preferredStartLabels.length > 3) preferredStartLabels = preferredStartLabels.slice(0, 3);
         }
 
         // Shift classification based on primary cluster
@@ -409,6 +403,8 @@
           preferredShift,
           shiftConsistency,
           blockStartCount: blockStartHours.length,
+          blockStartHours, // raw hours for scheduler matching
+          startClusters: clusters.map(c => ({ avg: c.avg, count: c.hours.length })),
         };
       });
 
@@ -805,11 +801,23 @@
     }
 
     // ─── Schedule Maker: Greedy Best-Fit Algorithm ─────────────
-    function getPreferredWindows(profile) {
-      // Extract multiple preferred start windows from driver profile
-      // Returns array of { center: decimalHour, min: decimalHour, max: decimalHour }
-      if (!profile || !profile.startTimes || profile.startTimes.length === 0) return [];
-      const hours = profile.startTimes.map(t => t.hour);
+    function getPreferredWindows(profile, driver) {
+      // Extract preferred start windows from driver's actual block start hours (best source)
+      // Falls back to profile's saved start times if driver data unavailable
+      let hours = [];
+      // Priority 1: driver's blockStartHours from current CSV (most accurate)
+      if (driver?.blockStartHours && driver.blockStartHours.length > 0) {
+        hours = driver.blockStartHours;
+      }
+      // Priority 2: driver's startClusters (pre-computed during transform)
+      else if (driver?.startClusters && driver.startClusters.length > 0) {
+        return driver.startClusters.map(c => ({ center: c.avg, count: c.count }));
+      }
+      // Priority 3: saved profile start times
+      else if (profile?.startTimes && profile.startTimes.length > 0) {
+        hours = profile.startTimes.map(t => t.hour);
+      }
+      if (hours.length === 0) return [];
       // Cluster hours within 2h of each other
       const clusters = [];
       const used = new Set();
@@ -823,10 +831,9 @@
           if (diff <= 2) { cluster.push(hours[j]); used.add(j); }
         }
         const avg = cluster.reduce((a, b) => a + b, 0) / cluster.length;
-        clusters.push({ center: avg, min: (avg - 6 + 24) % 24, max: (avg + 6) % 24, count: cluster.length });
+        clusters.push({ center: avg, count: cluster.length });
       }
-      // Only keep clusters with ≥2 starts, or all if <3 total blocks
-      if (hours.length >= 3) return clusters.filter(c => c.count >= 2);
+      // Return ALL clusters (never drop singletons — every start time matters)
       return clusters;
     }
 
@@ -842,7 +849,7 @@
         return isNaN(h) ? null : h + (m || 0) / 60;
       })();
       if (blockHour !== null) {
-        const windows = getPreferredWindows(profiles[driver.label]);
+        const windows = getPreferredWindows(profiles[driver.label], driver);
         if (windows.length > 0) {
           let minDelta = 24;
           windows.forEach(w => {
