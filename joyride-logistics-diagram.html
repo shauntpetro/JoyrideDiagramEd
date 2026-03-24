@@ -35,7 +35,8 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <script type="text/babel">
+  <script type="text/babel" data-v="2">
+    /* cache-bust v2 */
     const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 
     const B = {
@@ -1003,13 +1004,13 @@
       }));
 
       const schedule = {}; // driverId → Block[]
-      const driverWindows = {}; // driverId → [[startMs, endMs], ...]
-      drivers.forEach(d => { driverWindows[d.id] = []; });
+      const schedDriverWins = {}; // driverId → [[startMs, endMs], ...]
+      drivers.forEach(d => { schedDriverWins[d.id] = []; });
 
       // Helper: check rest requirements (10h after block 1, 34h after block 2)
       const fitsWindows = (driverId, startMs, endMs) => {
         if (startMs === Infinity) return true;
-        const windows = driverWindows[driverId] || [];
+        const windows = schedDriverWins[driverId] || [];
         const numAssigned = windows.length;
         // Rest required depends on which block this would be:
         // 2nd block needs 10h after 1st, 3rd block needs 34h after 2nd
@@ -1109,7 +1110,7 @@
         const commitPick = (c) => {
           available.delete(c.idx);
           pickedWindows.push([c.blk.startMs, c.blk.endMs]);
-          driverWindows[dp.id].push([c.blk.startMs, c.blk.endMs]);
+          schedDriverWins[dp.id].push([c.blk.startMs, c.blk.endMs]);
           if (!schedule[dp.id]) schedule[dp.id] = [];
           const matchType = c.blk.seatNum === dp.primarySeat ? "seat" : dp.allSeats.has(c.blk.seatNum) ? "seat2" : "time";
           schedule[dp.id].push({ ...c.blk, matchType, score: c.score });
@@ -1969,7 +1970,7 @@
         const REST_MS = 10 * 3600000;
 
         // Collect all existing block time windows for this driver (including 10h rest)
-        const driverWindows = driverBlks.map(b => ({
+        const drvTimeWins = driverBlks.map(b => ({
           start: parseBlockDateMs(b.blockStart),
           end: parseBlockDateMs(b.blockEnd),
         })).filter(w => w.start && w.end);
@@ -1977,7 +1978,7 @@
         // Check if a proposed block fits (no overlap with driver's schedule + 10h rest)
         const fits = (propStart, propEnd) => {
           if (!propStart || !propEnd) return false;
-          for (const w of driverWindows) {
+          for (const w of drvTimeWins) {
             const wEndWithRest = w.end + REST_MS;
             const propStartWithRest = propStart - REST_MS;
             // Check overlap: driver busy window (including rest on both sides)
