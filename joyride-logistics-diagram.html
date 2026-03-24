@@ -2407,7 +2407,10 @@
                           <div style={{ flex: 1, height: 1, background: "rgba(102,187,106,0.12)" }} />
                         </div>
                         {domDrivers.map((d, dIdx) => {
-                          const driverBlocks = proposedSchedule[d.id] || [];
+                          const driverBlocks = (proposedSchedule[d.id] || []).slice().sort((a, b) => {
+                            const parseT = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                            return parseT(a.blockStart) - parseT(b.blockStart);
+                          });
                           const profile = savedProfiles?.[d.label];
                           return (
                             <div key={d.id} style={{
