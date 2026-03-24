@@ -901,54 +901,19 @@
       };
       Object.values(blocksByDom).forEach(arr => arr.sort((a, b) => parseTime(a.blockStart) - parseTime(b.blockStart)));
       const schedule = {}; // driverId → Block[]
-      const unassigned = [];
-      // Assign blocks
-      Object.entries(blocksByDom).forEach(([dom, domBlocks]) => {
-        const domDrivers = driversByDom[dom] || [];
-        if (domDrivers.length === 0) { unassigned.push(...domBlocks); return; }
-        domBlocks.forEach(block => {
-          const blockStart = parseTime(block.blockStart);
-          const blockEnd = parseTime(block.blockEnd);
-          let bestDriver = null, bestScore = -1;
-          domDrivers.forEach(drv => {
-            if (drv.assignedBlocks.length >= MAX_BLOCKS) return;
-            // Check cycle remaining
-            const cycleHrs = drv.hosSource ? (drv.hosCycleRemaining || 0) / 60 : (drv.cycleRemaining || 70);
-            if (cycleHrs < MIN_CYCLE_HOURS) return;
-            // Check 10h rest between blocks
-            let restOk = true;
-            drv.assignedWindows.forEach(([s, e]) => {
-              if (blockStart < e + MIN_REST_HOURS * 3600000 && blockEnd > s - MIN_REST_HOURS * 3600000) restOk = false;
-            });
-            if (!restOk) return;
-            const score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
-            if (score > bestScore) { bestScore = score; bestDriver = drv; }
-          });
-          if (bestDriver) {
-            bestDriver.assignedBlocks.push(block);
-            bestDriver.assignedWindows.push([blockStart, blockEnd]);
-            if (!schedule[bestDriver.id]) schedule[bestDriver.id] = [];
-            schedule[bestDriver.id].push({ ...block, score: bestScore });
-          } else {
-            unassigned.push(block);
-          }
-        });
-      });
-      // Fill pass — try to give drivers with <3 blocks more assignments from unassigned
-      const stillUnassigned = [];
-      unassigned.forEach(block => {
-        const dom = block.domicile || "UNKNOWN";
-        const domDrivers = driversByDom[dom] || [];
+
+      // Helper: try to assign a block to the best driver given constraints
+      const tryAssign = (block, domDrivers, maxBlk, minCycleHrs, restHrs) => {
         const blockStart = parseTime(block.blockStart);
         const blockEnd = parseTime(block.blockEnd);
         let bestDriver = null, bestScore = -1;
         domDrivers.forEach(drv => {
-          if (drv.assignedBlocks.length >= MAX_BLOCKS) return;
+          if (drv.assignedBlocks.length >= maxBlk) return;
           const cycleHrs = drv.hosSource ? (drv.hosCycleRemaining || 0) / 60 : (drv.cycleRemaining || 70);
-          if (cycleHrs < MIN_CYCLE_HOURS) return;
+          if (cycleHrs < minCycleHrs) return;
           let restOk = true;
           drv.assignedWindows.forEach(([s, e]) => {
-            if (blockStart < e + MIN_REST_HOURS * 3600000 && blockEnd > s - MIN_REST_HOURS * 3600000) restOk = false;
+            if (blockStart < e + restHrs * 3600000 && blockEnd > s - restHrs * 3600000) restOk = false;
           });
           if (!restOk) return;
           const score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
@@ -959,11 +924,70 @@
           bestDriver.assignedWindows.push([blockStart, blockEnd]);
           if (!schedule[bestDriver.id]) schedule[bestDriver.id] = [];
           schedule[bestDriver.id].push({ ...block, score: bestScore });
-        } else {
-          stillUnassigned.push(block);
+          return true;
         }
+        return false;
+      };
+
+      // Multi-pass assignment with progressively relaxed constraints:
+      // Pass 1: Strict (3 blocks max, 34h cycle, 10h rest)
+      // Pass 2: Fill (3 blocks max, 20h cycle, 10h rest) — more drivers eligible
+      // Pass 3: Relaxed (4 blocks max, 10h cycle, 8h rest) — overflow
+      // Pass 4: Force (6 blocks max, 0h cycle, 4h rest) — assign everything possible
+      const passes = [
+        { maxBlk: MAX_BLOCKS, minCycle: MIN_CYCLE_HOURS, rest: MIN_REST_HOURS, label: "strict" },
+        { maxBlk: MAX_BLOCKS, minCycle: 10, rest: MIN_REST_HOURS, label: "fill" },
+        { maxBlk: 4, minCycle: 0, rest: 8, label: "relaxed" },
+        { maxBlk: 5, minCycle: 0, rest: 0, label: "force" },
+      ];
+
+      let pending = [];
+      // Initial assignment by domicile
+      Object.entries(blocksByDom).forEach(([dom, domBlocks]) => {
+        const domDrivers = driversByDom[dom] || [];
+        if (domDrivers.length === 0) { pending.push(...domBlocks); return; }
+        domBlocks.forEach(block => {
+          if (!tryAssign(block, domDrivers, passes[0].maxBlk, passes[0].minCycle, passes[0].rest)) {
+            pending.push(block);
+          }
+        });
       });
-      return { schedule, unassigned: stillUnassigned };
+
+      // Subsequent passes for remaining blocks
+      for (let p = 1; p < passes.length && pending.length > 0; p++) {
+        const pass = passes[p];
+        const stillPending = [];
+        pending.forEach(block => {
+          const dom = block.domicile || "UNKNOWN";
+          const domDrivers = driversByDom[dom] || [];
+          if (!tryAssign(block, domDrivers, pass.maxBlk, pass.minCycle, pass.rest)) {
+            stillPending.push(block);
+          }
+        });
+        pending = stillPending;
+      }
+
+      // Final round-robin: any remaining blocks get force-assigned to driver with fewest blocks in that domicile
+      if (pending.length > 0) {
+        const finalUnassigned = [];
+        pending.forEach(block => {
+          const dom = block.domicile || "UNKNOWN";
+          const domDrivers = driversByDom[dom] || [];
+          if (domDrivers.length === 0) { finalUnassigned.push(block); return; }
+          // Pick driver with fewest blocks
+          let minDriver = domDrivers[0];
+          domDrivers.forEach(drv => { if (drv.assignedBlocks.length < minDriver.assignedBlocks.length) minDriver = drv; });
+          minDriver.assignedBlocks.push(block);
+          const blockStart = parseTime(block.blockStart);
+          const blockEnd = parseTime(block.blockEnd);
+          minDriver.assignedWindows.push([blockStart, blockEnd]);
+          if (!schedule[minDriver.id]) schedule[minDriver.id] = [];
+          schedule[minDriver.id].push({ ...block, score: 0 });
+        });
+        pending = finalUnassigned;
+      }
+
+      return { schedule, unassigned: pending };
     }
 
     // Parse schedule CSV into blocks with domicile extraction
