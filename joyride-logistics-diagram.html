@@ -947,13 +947,35 @@
       const MIN_REST_HOURS = 10;
       const MIN_CYCLE_HOURS = 34;
       const MAX_BLOCKS = 3;
-      // Build driver lookup by domicile
+
+      // ═══ STEP 1: Build Operator ID → Drivers mapping from historical data ═══
+      // Each seat can have multiple drivers (primary/secondary). Track all of them.
+      const seatDrivers = {}; // seatNum → [{ driverId, count, label }] sorted by dominance
+      drivers.forEach(d => {
+        if (!d.blocks) return;
+        const seatCounts = {};
+        d.blocks.forEach(b => {
+          const sn = (b.truckLabel || "").split("_").pop();
+          if (sn) seatCounts[sn] = (seatCounts[sn] || 0) + 1;
+        });
+        Object.entries(seatCounts).forEach(([sn, count]) => {
+          if (!seatDrivers[sn]) seatDrivers[sn] = [];
+          seatDrivers[sn].push({ driverId: d.id, count, label: d.label });
+        });
+      });
+      // Sort each seat's drivers by trip count (most dominant first)
+      Object.values(seatDrivers).forEach(arr => arr.sort((a, b) => b.count - a.count));
+
+      // Build driver lookup by domicile (for fallback scoring)
       const driversByDom = {};
       drivers.forEach(d => {
         if (!d.domicile) return;
         if (!driversByDom[d.domicile]) driversByDom[d.domicile] = [];
         driversByDom[d.domicile].push({ ...d, assignedBlocks: [], assignedWindows: [] });
       });
+      // Also build driverId → driversByDom entry for quick lookup
+      const driverLookup = {};
+      Object.values(driversByDom).flat().forEach(d => { driverLookup[d.id] = d; });
       // Group blocks by domicile (extracted from Operator ID)
       const blocksByDom = {};
       blocks.forEach(b => {
@@ -1002,11 +1024,56 @@
         return false;
       };
 
-      // Multi-pass assignment with progressively relaxed constraints:
-      // Pass 1: Strict (3 blocks max, 34h cycle, 10h rest)
-      // Pass 2: Fill (3 blocks max, 20h cycle, 10h rest) — more drivers eligible
-      // Pass 3: Relaxed (4 blocks max, 10h cycle, 8h rest) — overflow
-      // Pass 4: Force (6 blocks max, 0h cycle, 4h rest) — assign everything possible
+      // ═══ PASS 0: OPERATOR ID DIRECT ASSIGNMENT (primary key) ═══
+      // Group new blocks by their Operator ID seat number
+      const blocksBySeat = {};
+      const allBlocks = Object.values(blocksByDom).flat();
+      allBlocks.forEach(block => {
+        const sn = (block.operatorId || "").split("_").pop();
+        if (!blocksBySeat[sn]) blocksBySeat[sn] = [];
+        blocksBySeat[sn].push(block);
+      });
+      // Sort each seat's blocks chronologically
+      Object.values(blocksBySeat).forEach(arr => arr.sort((a, b) => parseTime(a.blockStart) - parseTime(b.blockStart)));
+
+      let pending = [];
+
+      // For each seat, distribute blocks round-robin to drivers who historically run it
+      Object.entries(blocksBySeat).forEach(([seatNum, seatBlocks]) => {
+        const candidates = (seatDrivers[seatNum] || []).map(c => driverLookup[c.driverId]).filter(Boolean);
+
+        if (candidates.length === 0) {
+          pending.push(...seatBlocks);
+          return;
+        }
+
+        // Round-robin: give each candidate driver up to MAX_BLOCKS from this seat
+        let driverIdx = 0;
+        seatBlocks.forEach(block => {
+          const blockStart = parseTime(block.blockStart);
+          const blockEnd = parseTime(block.blockEnd);
+          let assigned = false;
+
+          // Try each candidate starting from current round-robin position
+          for (let attempts = 0; attempts < candidates.length; attempts++) {
+            const drv = candidates[(driverIdx + attempts) % candidates.length];
+            if (drv.assignedBlocks.length >= MAX_BLOCKS) continue;
+
+            const score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
+            const finalScore = Math.max(score >= 0 ? score : 0.5, 0.7);
+            drv.assignedBlocks.push(block);
+            drv.assignedWindows.push([blockStart, blockEnd]);
+            if (!schedule[drv.id]) schedule[drv.id] = [];
+            schedule[drv.id].push({ ...block, score: finalScore, seatMatch: true });
+            driverIdx = (driverIdx + attempts + 1) % candidates.length;
+            assigned = true;
+            break;
+          }
+          if (!assigned) pending.push(block);
+        });
+      });
+
+      // ═══ PASSES 1-4: Score-based assignment for remaining blocks ═══
       const passes = [
         { maxBlk: MAX_BLOCKS, minCycle: MIN_CYCLE_HOURS, rest: MIN_REST_HOURS, skip: false, label: "strict" },
         { maxBlk: MAX_BLOCKS, minCycle: 10, rest: MIN_REST_HOURS, skip: false, label: "fill" },
@@ -1014,20 +1081,7 @@
         { maxBlk: 5, minCycle: 0, rest: 0, skip: true, label: "force" },
       ];
 
-      let pending = [];
-      // Initial assignment by domicile — strict pass with ±6h time cutoff
-      Object.entries(blocksByDom).forEach(([dom, domBlocks]) => {
-        const domDrivers = driversByDom[dom] || [];
-        if (domDrivers.length === 0) { pending.push(...domBlocks); return; }
-        domBlocks.forEach(block => {
-          if (!tryAssign(block, domDrivers, passes[0].maxBlk, passes[0].minCycle, passes[0].rest, passes[0].skip)) {
-            pending.push(block);
-          }
-        });
-      });
-
-      // Subsequent passes for remaining blocks
-      for (let p = 1; p < passes.length && pending.length > 0; p++) {
+      for (let p = 0; p < passes.length && pending.length > 0; p++) {
         const pass = passes[p];
         const stillPending = [];
         pending.forEach(block => {
