@@ -804,6 +804,214 @@
       });
     }
 
+    // ─── Schedule Maker: Greedy Best-Fit Algorithm ─────────────
+    function getPreferredWindows(profile) {
+      // Extract multiple preferred start windows from driver profile
+      // Returns array of { center: decimalHour, min: decimalHour, max: decimalHour }
+      if (!profile || !profile.startTimes || profile.startTimes.length === 0) return [];
+      const hours = profile.startTimes.map(t => t.hour);
+      // Cluster hours within 2h of each other
+      const clusters = [];
+      const used = new Set();
+      for (let i = 0; i < hours.length; i++) {
+        if (used.has(i)) continue;
+        const cluster = [hours[i]];
+        used.add(i);
+        for (let j = i + 1; j < hours.length; j++) {
+          if (used.has(j)) continue;
+          const diff = Math.min(Math.abs(hours[j] - cluster[0]), 24 - Math.abs(hours[j] - cluster[0]));
+          if (diff <= 2) { cluster.push(hours[j]); used.add(j); }
+        }
+        const avg = cluster.reduce((a, b) => a + b, 0) / cluster.length;
+        clusters.push({ center: avg, min: (avg - 6 + 24) % 24, max: (avg + 6) % 24, count: cluster.length });
+      }
+      // Only keep clusters with ≥2 starts, or all if <3 total blocks
+      if (hours.length >= 3) return clusters.filter(c => c.count >= 2);
+      return clusters;
+    }
+
+    function scoreDriver(driver, block, assignedCount, profiles) {
+      const WEIGHTS = { startTime: 0.4, cycle: 0.3, balance: 0.2, proximity: 0.1 };
+      // Start time match — distance to nearest preferred window
+      let startScore = 0;
+      const blockHour = (() => {
+        if (!block.blockStart) return null;
+        const parts = block.blockStart.split(" ");
+        if (parts.length < 2) return null;
+        const [h, m] = parts[1].split(":").map(Number);
+        return isNaN(h) ? null : h + (m || 0) / 60;
+      })();
+      if (blockHour !== null) {
+        const windows = getPreferredWindows(profiles[driver.label]);
+        if (windows.length > 0) {
+          let minDelta = 24;
+          windows.forEach(w => {
+            const diff = Math.min(Math.abs(blockHour - w.center), 24 - Math.abs(blockHour - w.center));
+            if (diff < minDelta) minDelta = diff;
+          });
+          startScore = Math.max(0, (6 - minDelta) / 6);
+        } else {
+          startScore = 0.3; // No preference data — neutral score
+        }
+      }
+      // Cycle capacity
+      const cycleHours = driver.hosSource ? (driver.hosCycleRemaining || 0) / 60 : (driver.cycleRemaining || 70);
+      const cycleScore = Math.min(cycleHours / 70, 1);
+      // Load balance — prefer drivers with fewer blocks
+      const balanceScore = Math.max(0, (3 - assignedCount) / 3);
+      // Facility proximity
+      let proxScore = 0;
+      if (driver.facilities && block.trips) {
+        const driverFacs = new Set(driver.facilities.map(f => f.toLowerCase()));
+        const blockFacs = new Set();
+        block.trips.forEach(t => { if (t.stop1) blockFacs.add(t.stop1.toLowerCase()); if (t.stop2) blockFacs.add(t.stop2.toLowerCase()); });
+        let shared = 0;
+        blockFacs.forEach(f => { if (driverFacs.has(f)) shared++; });
+        proxScore = blockFacs.size > 0 ? shared / blockFacs.size : 0;
+      }
+      return (startScore * WEIGHTS.startTime) + (cycleScore * WEIGHTS.cycle) + (balanceScore * WEIGHTS.balance) + (proxScore * WEIGHTS.proximity);
+    }
+
+    function greedySchedule(blocks, drivers, profiles, hosData) {
+      const MIN_REST_HOURS = 10;
+      const MIN_CYCLE_HOURS = 34;
+      const MAX_BLOCKS = 3;
+      // Build driver lookup by domicile
+      const driversByDom = {};
+      drivers.forEach(d => {
+        if (!d.domicile) return;
+        if (!driversByDom[d.domicile]) driversByDom[d.domicile] = [];
+        driversByDom[d.domicile].push({ ...d, assignedBlocks: [], assignedWindows: [] });
+      });
+      // Group blocks by domicile (extracted from Operator ID)
+      const blocksByDom = {};
+      blocks.forEach(b => {
+        const dom = b.domicile || "UNKNOWN";
+        if (!blocksByDom[dom]) blocksByDom[dom] = [];
+        blocksByDom[dom].push(b);
+      });
+      // Sort blocks in each domicile by start time
+      const parseTime = (str) => {
+        if (!str) return Infinity;
+        const parts = str.split(" ");
+        if (parts.length < 2) return Infinity;
+        const [m, d, y] = parts[0].split("/").map(Number);
+        const [h, min] = parts[1].split(":").map(Number);
+        return new Date(y, m - 1, d, h, min || 0).getTime();
+      };
+      Object.values(blocksByDom).forEach(arr => arr.sort((a, b) => parseTime(a.blockStart) - parseTime(b.blockStart)));
+      const schedule = {}; // driverId → Block[]
+      const unassigned = [];
+      // Assign blocks
+      Object.entries(blocksByDom).forEach(([dom, domBlocks]) => {
+        const domDrivers = driversByDom[dom] || [];
+        if (domDrivers.length === 0) { unassigned.push(...domBlocks); return; }
+        domBlocks.forEach(block => {
+          const blockStart = parseTime(block.blockStart);
+          const blockEnd = parseTime(block.blockEnd);
+          let bestDriver = null, bestScore = -1;
+          domDrivers.forEach(drv => {
+            if (drv.assignedBlocks.length >= MAX_BLOCKS) return;
+            // Check cycle remaining
+            const cycleHrs = drv.hosSource ? (drv.hosCycleRemaining || 0) / 60 : (drv.cycleRemaining || 70);
+            if (cycleHrs < MIN_CYCLE_HOURS) return;
+            // Check 10h rest between blocks
+            let restOk = true;
+            drv.assignedWindows.forEach(([s, e]) => {
+              if (blockStart < e + MIN_REST_HOURS * 3600000 && blockEnd > s - MIN_REST_HOURS * 3600000) restOk = false;
+            });
+            if (!restOk) return;
+            const score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
+            if (score > bestScore) { bestScore = score; bestDriver = drv; }
+          });
+          if (bestDriver) {
+            bestDriver.assignedBlocks.push(block);
+            bestDriver.assignedWindows.push([blockStart, blockEnd]);
+            if (!schedule[bestDriver.id]) schedule[bestDriver.id] = [];
+            schedule[bestDriver.id].push({ ...block, score: bestScore });
+          } else {
+            unassigned.push(block);
+          }
+        });
+      });
+      // Fill pass — try to give drivers with <3 blocks more assignments from unassigned
+      const stillUnassigned = [];
+      unassigned.forEach(block => {
+        const dom = block.domicile || "UNKNOWN";
+        const domDrivers = driversByDom[dom] || [];
+        const blockStart = parseTime(block.blockStart);
+        const blockEnd = parseTime(block.blockEnd);
+        let bestDriver = null, bestScore = -1;
+        domDrivers.forEach(drv => {
+          if (drv.assignedBlocks.length >= MAX_BLOCKS) return;
+          const cycleHrs = drv.hosSource ? (drv.hosCycleRemaining || 0) / 60 : (drv.cycleRemaining || 70);
+          if (cycleHrs < MIN_CYCLE_HOURS) return;
+          let restOk = true;
+          drv.assignedWindows.forEach(([s, e]) => {
+            if (blockStart < e + MIN_REST_HOURS * 3600000 && blockEnd > s - MIN_REST_HOURS * 3600000) restOk = false;
+          });
+          if (!restOk) return;
+          const score = scoreDriver(drv, block, drv.assignedBlocks.length, profiles);
+          if (score > bestScore) { bestScore = score; bestDriver = drv; }
+        });
+        if (bestDriver) {
+          bestDriver.assignedBlocks.push(block);
+          bestDriver.assignedWindows.push([blockStart, blockEnd]);
+          if (!schedule[bestDriver.id]) schedule[bestDriver.id] = [];
+          schedule[bestDriver.id].push({ ...block, score: bestScore });
+        } else {
+          stillUnassigned.push(block);
+        }
+      });
+      return { schedule, unassigned: stillUnassigned };
+    }
+
+    // Parse schedule CSV into blocks with domicile extraction
+    function parseScheduleBlocks(rows) {
+      const blocks = [];
+      const blockMap = {}; // blockId → block
+      rows.forEach(row => {
+        const blockId = (row["Block ID"] || "").trim();
+        const operatorId = (row["Operator ID"] || "").trim();
+        const driverName = (row["Driver Name"] || "").trim();
+        if (!blockId) return;
+        if (!blockMap[blockId]) {
+          // Extract domicile from Operator ID (e.g., JYRG_LAS_Solo2_1021 → LAS)
+          const parts = operatorId.split("_");
+          const domicile = parts.length >= 2 ? parts[1] : "UNKNOWN";
+          blockMap[blockId] = {
+            blockId, operatorId, domicile, driverName,
+            trips: [], blockStart: null, blockEnd: null, totalMiles: 0,
+          };
+          blocks.push(blockMap[blockId]);
+        }
+        const blk = blockMap[blockId];
+        const dist = parseFloat(row["Estimate Distance"] || "0") || 0;
+        blk.totalMiles += dist;
+        const trip = {
+          tripId: (row["Trip ID"] || "").trim(),
+          stop1: (row["Stop 1"] || "").trim(), stop2: (row["Stop 2"] || "").trim(),
+          distance: dist,
+          stop1ArrDate: (row["Stop 1 Planned Arrival Date"] || "").trim(),
+          stop1ArrTime: (row["Stop 1 Planned Arrival Time"] || "").trim(),
+          stop2ArrDate: (row["Stop 2 Planned Arrival Date"] || "").trim(),
+          stop2ArrTime: (row["Stop 2 Planned Arrival Time"] || "").trim(),
+          stage: (row["Trip Stage"] || "").trim(),
+        };
+        blk.trips.push(trip);
+        // Update block start/end from trip times
+        if (trip.stop1ArrDate && trip.stop1ArrTime) {
+          const ts = `${trip.stop1ArrDate} ${trip.stop1ArrTime}`;
+          if (!blk.blockStart || ts < blk.blockStart) blk.blockStart = ts;
+        }
+        if (trip.stop2ArrDate && trip.stop2ArrTime) {
+          const ts = `${trip.stop2ArrDate} ${trip.stop2ArrTime}`;
+          if (!blk.blockEnd || ts > blk.blockEnd) blk.blockEnd = ts;
+        }
+      });
+      return blocks;
+    }
+
     const LOGO_SRC = "Joyride-logo-header-footer-01-768x293.png";
 
     const JoyrideLogo = ({ height = 40 }) => (
@@ -1078,6 +1286,17 @@
       const [csvRegion, setCsvRegion] = useState("ALL");
       const [csvRegions, setCsvRegions] = useState([]);
       const [csvStats, setCsvStats] = useState(null);
+
+      // Schedule Maker state
+      const [scheduleTab, setScheduleTab] = useState(false);
+      const [scheduleCsvRows, setScheduleCsvRows] = useState(null);
+      const [scheduleBlocks, setScheduleBlocks] = useState([]);
+      const [proposedSchedule, setProposedSchedule] = useState({});
+      const [unassignedBlocks, setUnassignedBlocks] = useState([]);
+      const [scheduleGenerated, setScheduleGenerated] = useState(false);
+      const [scheduleRegion, setScheduleRegion] = useState("ALL");
+      const [scheduleRegions, setScheduleRegions] = useState([]);
+      const [reassigningBlock, setReassigningBlock] = useState(null);
 
       // Samsara ELD state
       const [samsaraConnected, setSamsaraConnected] = useState(false);
@@ -1823,7 +2042,22 @@
             <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
               <JoyrideLogo height={36} />
               <div style={{ width: 1, height: 24, background: "rgba(255,255,255,0.12)" }} />
-              <span style={{ fontSize: 13, fontWeight: 600, color: B.muted, letterSpacing: 0.5 }}>Fleet Operations</span>
+              {csvRows ? (
+                <div style={{ display: "flex", gap: 0 }}>
+                  {[{ key: false, label: "Fleet Operations" }, { key: true, label: "Schedule Maker" }].map(tab => (
+                    <button key={tab.label} onClick={() => setScheduleTab(tab.key)} style={{
+                      padding: "6px 14px", fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      fontFamily: "'Montserrat', sans-serif", border: "none", letterSpacing: 0.5,
+                      background: scheduleTab === tab.key ? (tab.key ? "rgba(102,187,106,0.15)" : "rgba(193,59,64,0.15)") : "rgba(255,255,255,0.04)",
+                      color: scheduleTab === tab.key ? (tab.key ? B.green : B.redLight) : B.dim,
+                      borderBottom: scheduleTab === tab.key ? `2px solid ${tab.key ? B.green : B.red}` : "2px solid transparent",
+                      textTransform: "uppercase",
+                    }}>{tab.label}</button>
+                  ))}
+                </div>
+              ) : (
+                <span style={{ fontSize: 13, fontWeight: 600, color: B.muted, letterSpacing: 0.5 }}>Fleet Operations</span>
+              )}
             </div>
             <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
               {!csvRows && <ModelToggle mode={mode} onToggle={handleToggle} />}
@@ -1972,8 +2206,321 @@
             </span>
           </div>
 
+          {/* ═══ SCHEDULE MAKER TAB ═══ */}
+          {scheduleTab && csvRows && (
+            <div style={{ padding: "16px 20px", background: B.bg, minHeight: 400 }}>
+              {/* Header with CSV upload + Generate button */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 16, fontWeight: 700, color: B.green, textTransform: "uppercase", letterSpacing: 1 }}>Schedule Maker</span>
+                <div style={{ flex: 1 }} />
+                {/* Schedule CSV Upload */}
+                <label style={{
+                  padding: "6px 16px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                  fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                  background: scheduleCsvRows ? "rgba(102,187,106,0.12)" : "rgba(255,255,255,0.06)",
+                  color: scheduleCsvRows ? B.green : B.muted,
+                  border: `1.5px solid ${scheduleCsvRows ? "rgba(102,187,106,0.3)" : B.bdr}`,
+                }}>
+                  {scheduleCsvRows ? `${scheduleBlocks.length} blocks loaded` : "Upload Next Week's Blocks"}
+                  <input type="file" accept=".csv" style={{ display: "none" }} onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                      const rows = parseCSV(ev.target.result);
+                      if (rows.length > 0) {
+                        setScheduleCsvRows(rows);
+                        const blocks = parseScheduleBlocks(rows);
+                        setScheduleBlocks(blocks);
+                        const regions = [...new Set(blocks.map(b => b.domicile).filter(d => d && d !== "UNKNOWN"))].sort();
+                        setScheduleRegions(regions);
+                        setProposedSchedule({});
+                        setUnassignedBlocks([]);
+                        setScheduleGenerated(false);
+                      }
+                    };
+                    reader.readAsText(file);
+                    e.target.value = "";
+                  }} />
+                </label>
+                {/* Region filter for schedule */}
+                {scheduleRegions.length > 0 && (
+                  <div style={{ display: "flex", gap: 0 }}>
+                    {["ALL", ...scheduleRegions].map(r => (
+                      <button key={r} onClick={() => setScheduleRegion(r)} style={{
+                        padding: "4px 10px", fontSize: 9, fontWeight: 700, cursor: "pointer",
+                        fontFamily: "'Montserrat', sans-serif", border: "none", textTransform: "uppercase",
+                        background: scheduleRegion === r ? "rgba(102,187,106,0.15)" : "rgba(255,255,255,0.04)",
+                        color: scheduleRegion === r ? B.green : B.dim,
+                        borderBottom: scheduleRegion === r ? `2px solid ${B.green}` : "2px solid transparent",
+                      }}>{r}</button>
+                    ))}
+                  </div>
+                )}
+                {/* Generate Schedule Button */}
+                {scheduleCsvRows && !scheduleGenerated && (
+                  <button onClick={() => {
+                    const filteredBlocks = scheduleRegion === "ALL" ? scheduleBlocks : scheduleBlocks.filter(b => b.domicile === scheduleRegion);
+                    const result = greedySchedule(filteredBlocks, DRIVERS, savedProfiles || {}, samsaraHOS);
+                    setProposedSchedule(result.schedule);
+                    setUnassignedBlocks(result.unassigned);
+                    setScheduleGenerated(true);
+                  }} style={{
+                    padding: "8px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer",
+                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase", letterSpacing: 1,
+                    background: B.green, color: "#1c1f26", border: "none",
+                    boxShadow: `0 4px 12px rgba(102,187,106,0.3)`,
+                  }}>Generate Schedule</button>
+                )}
+                {scheduleGenerated && (
+                  <button onClick={() => {
+                    setProposedSchedule({});
+                    setUnassignedBlocks([]);
+                    setScheduleGenerated(false);
+                  }} style={{
+                    padding: "6px 14px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                    background: "rgba(255,255,255,0.06)", color: B.dim, border: `1px solid ${B.bdr}`,
+                  }}>Clear</button>
+                )}
+              </div>
+
+              {/* Stats bar */}
+              {scheduleCsvRows && (
+                <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 11, color: B.muted }}>
+                  <span><strong style={{ color: B.text }}>{scheduleBlocks.length}</strong> blocks</span>
+                  <span><strong style={{ color: B.text }}>{DRIVERS.length}</strong> drivers</span>
+                  {scheduleGenerated && (
+                    <>
+                      <span><strong style={{ color: B.green }}>{Object.values(proposedSchedule).flat().length}</strong> assigned</span>
+                      <span><strong style={{ color: unassignedBlocks.length > 0 ? B.cancelRed : B.dim }}>{unassignedBlocks.length}</strong> unassigned</span>
+                      <span><strong style={{ color: B.text }}>{Object.keys(proposedSchedule).length}</strong> drivers with blocks</span>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Empty state */}
+              {!scheduleCsvRows && (
+                <div style={{ textAlign: "center", padding: "60px 20px", color: B.dim }}>
+                  <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.3 }}>📋</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>Upload Next Week's Blocks</div>
+                  <div style={{ fontSize: 11 }}>Drop a CSV from Amazon Relay to generate an optimized driver schedule</div>
+                </div>
+              )}
+
+              {/* Proposed Schedule Table */}
+              {scheduleGenerated && (
+                <div style={{ overflowX: "auto" }}>
+                  {/* Column headers */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "8px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 6, minWidth: "fit-content" }}>
+                    <div style={{ width: 40, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center" }}>#</div>
+                    <div style={{ width: 280, fontSize: 10, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
+                    {[1, 2, 3].map(n => (
+                      <div key={n} style={{ width: 160, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
+                    ))}
+                  </div>
+
+                  {/* Driver rows grouped by domicile */}
+                  {(data.domicileOrder || [])
+                    .filter(dom => scheduleRegion === "ALL" || dom === scheduleRegion)
+                    .map(dom => {
+                    const domDrivers = DRIVERS.filter(d => d.domicile === dom);
+                    if (domDrivers.length === 0) return null;
+                    return (
+                      <div key={dom}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0 6px", borderBottom: `1px solid rgba(102,187,106,0.15)`, marginTop: 8 }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: B.green, letterSpacing: 1 }}>{dom}</span>
+                          <span style={{ fontSize: 11, color: B.dim }}>({domDrivers.length} drivers)</span>
+                          <div style={{ flex: 1, height: 1, background: "rgba(102,187,106,0.12)" }} />
+                        </div>
+                        {domDrivers.map((d, dIdx) => {
+                          const driverBlocks = proposedSchedule[d.id] || [];
+                          const profile = savedProfiles?.[d.label];
+                          return (
+                            <div key={d.id} style={{
+                              display: "flex", alignItems: "center", gap: 0, padding: "8px 0",
+                              minWidth: "fit-content",
+                              background: dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
+                              borderRadius: 4,
+                            }}>
+                              {/* Driver number */}
+                              <div style={{ width: 40, textAlign: "center", fontSize: 13, fontWeight: 700, color: B.dim, flexShrink: 0 }}>
+                                {d.driverNumber}
+                              </div>
+                              {/* Driver name + prefs */}
+                              <div style={{ width: 280, flexShrink: 0, paddingRight: 10 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, fontWeight: 600, color: B.text }}>
+                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                                  {d.preferredStartLabels && d.preferredStartLabels.length > 0 && (
+                                    <span style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}>
+                                      {d.preferredStartLabels.map((lbl, li) => (
+                                        <span key={li} style={{
+                                          fontSize: 9, fontWeight: 700, padding: "2px 5px", borderRadius: 4,
+                                          background: d.preferredShift === "PM" ? "rgba(255,213,79,0.12)" : "rgba(100,181,246,0.12)",
+                                          color: d.preferredShift === "PM" ? B.gold : "#64b5f6",
+                                        }}>{lbl}</span>
+                                      ))}
+                                    </span>
+                                  )}
+                                </div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, fontSize: 10, color: B.dim }}>
+                                  <span style={{ fontWeight: 600, color: driverBlocks.length >= 3 ? B.green : driverBlocks.length >= 2 ? B.gold : B.dim }}>
+                                    {driverBlocks.length}/3
+                                  </span>
+                                  <span>{d.cycleRemaining || 70}h cyc</span>
+                                </div>
+                              </div>
+                              {/* Blocks 1, 2, 3 */}
+                              {[0, 1, 2].map(idx => {
+                                const blk = driverBlocks[idx];
+                                if (!blk) return (
+                                  <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px" }}>
+                                    <div style={{
+                                      width: "100%", borderRadius: 8, padding: "10px 6px", textAlign: "center",
+                                      border: `1.5px dashed rgba(102,187,106,0.15)`, background: "rgba(102,187,106,0.02)",
+                                      color: B.dim, fontSize: 10,
+                                    }}>—</div>
+                                  </div>
+                                );
+                                return (
+                                  <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative" }}>
+                                    <div
+                                      onClick={(e) => { e.stopPropagation(); setReassigningBlock(reassigningBlock === `${d.id}-${idx}` ? null : `${d.id}-${idx}`); }}
+                                      style={{
+                                        width: "100%", borderRadius: 8, padding: "8px 6px", textAlign: "center",
+                                        border: `1.5px solid rgba(102,187,106,0.35)`, borderTop: `3px solid ${B.green}`,
+                                        background: "rgba(102,187,106,0.04)", cursor: "pointer",
+                                        transition: "all 0.15s",
+                                      }}>
+                                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: B.dim, marginBottom: 2 }}>
+                                        <span style={{ color: B.green, fontWeight: 600 }}>PROPOSED</span>
+                                        <span>{blk.totalMiles ? `${Math.round(blk.totalMiles)}mi` : ""}</span>
+                                      </div>
+                                      <div style={{ fontSize: 10, fontWeight: 700, color: B.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                        {blk.blockId.slice(0, 8)}
+                                      </div>
+                                      <div style={{ fontSize: 8, color: B.dim, marginTop: 2 }}>
+                                        {blk.operatorId ? blk.operatorId.split("_").slice(-1)[0] : ""}
+                                      </div>
+                                      {blk.blockStart && (
+                                        <div style={{ fontSize: 8, marginTop: 2 }}>
+                                          <span style={{ color: B.greenL }}>{formatBlockTime(blk.blockStart)}</span>
+                                          <span style={{ color: B.dim }}> → </span>
+                                          <span style={{ color: B.gold }}>{formatBlockTime(blk.blockEnd)}</span>
+                                        </div>
+                                      )}
+                                      {blk.score !== undefined && (
+                                        <div style={{ fontSize: 7, color: B.dim, marginTop: 2 }}>
+                                          match: {Math.round(blk.score * 100)}%
+                                        </div>
+                                      )}
+                                    </div>
+                                    {/* Reassign dropdown */}
+                                    {reassigningBlock === `${d.id}-${idx}` && (
+                                      <div onClick={(e) => e.stopPropagation()} style={{
+                                        position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)",
+                                        marginTop: 4, background: B.card, border: `1.5px solid ${B.green}`,
+                                        borderRadius: 10, padding: 8, zIndex: 500, minWidth: 240, maxHeight: 200, overflowY: "auto",
+                                        boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+                                      }}>
+                                        <div style={{ fontSize: 9, fontWeight: 700, color: B.greenL, marginBottom: 4, textAlign: "center", textTransform: "uppercase" }}>
+                                          Reassign Block
+                                        </div>
+                                        {DRIVERS.filter(cd => cd.domicile === d.domicile && cd.id !== d.id && (proposedSchedule[cd.id] || []).length < 3).map(cd => (
+                                          <div key={cd.id} onClick={() => {
+                                            // Move block from current driver to new driver
+                                            const newSchedule = { ...proposedSchedule };
+                                            const fromBlocks = [...(newSchedule[d.id] || [])];
+                                            const movedBlock = fromBlocks.splice(idx, 1)[0];
+                                            newSchedule[d.id] = fromBlocks;
+                                            newSchedule[cd.id] = [...(newSchedule[cd.id] || []), movedBlock];
+                                            setProposedSchedule(newSchedule);
+                                            setReassigningBlock(null);
+                                          }} style={{
+                                            padding: "4px 8px", borderRadius: 4, cursor: "pointer", fontSize: 10,
+                                            color: B.text, transition: "background 0.1s",
+                                          }}
+                                          onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(102,187,106,0.08)")}
+                                          onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                                          >
+                                            {cd.label} <span style={{ fontSize: 8, color: B.dim }}>({(proposedSchedule[cd.id] || []).length}/3)</span>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+
+                  {/* Unassigned blocks */}
+                  {unassignedBlocks.length > 0 && (
+                    <div style={{ marginTop: 16, padding: "12px 0", borderTop: `1px solid ${B.bdr}` }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: B.cancelRed, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                        Unassigned Blocks ({unassignedBlocks.length})
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                        {unassignedBlocks.map((blk, i) => (
+                          <div key={blk.blockId} style={{
+                            padding: "8px 12px", borderRadius: 8, background: "rgba(193,59,64,0.06)",
+                            border: `1px solid rgba(193,59,64,0.2)`, fontSize: 10,
+                          }}>
+                            <div style={{ fontWeight: 700, color: B.text }}>{blk.blockId.slice(0, 8)}</div>
+                            <div style={{ fontSize: 8, color: B.dim }}>{blk.domicile} · {blk.operatorId?.split("_").slice(-1)[0]}</div>
+                            {blk.blockStart && <div style={{ fontSize: 8, color: B.muted }}>{formatBlockTime(blk.blockStart)}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Bottom action bar */}
+              {scheduleGenerated && (
+                <div style={{ display: "flex", gap: 12, marginTop: 20, padding: "12px 0", borderTop: `1px solid ${B.bdr}` }}>
+                  <button onClick={() => {
+                    // Push proposed schedule to main view — merge into current CSV data
+                    // TODO: This would update the main view's block assignments
+                    setScheduleTab(false);
+                  }} style={{
+                    padding: "10px 28px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                    background: B.green, color: "#1c1f26", border: "none",
+                    boxShadow: `0 4px 12px rgba(102,187,106,0.3)`,
+                  }}>Push to Main View</button>
+                  <button onClick={() => {
+                    // Export schedule as CSV
+                    const rows = ["Driver,Operator ID,Block ID,Block Start,Block End,Miles"];
+                    Object.entries(proposedSchedule).forEach(([driverId, blocks]) => {
+                      const driver = DRIVERS.find(d => d.id == driverId);
+                      blocks.forEach(blk => {
+                        rows.push(`"${driver?.label || ""}","${blk.operatorId || ""}","${blk.blockId}","${blk.blockStart || ""}","${blk.blockEnd || ""}",${Math.round(blk.totalMiles || 0)}`);
+                      });
+                    });
+                    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url; a.download = "proposed-schedule.csv"; a.click();
+                    URL.revokeObjectURL(url);
+                  }} style={{
+                    padding: "8px 20px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
+                    fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                    background: "rgba(255,255,255,0.06)", color: B.muted, border: `1px solid ${B.bdr}`,
+                  }}>Export CSV</button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ═══ CSV MODE: Driver-centric row layout ═══ */}
-          {csvRows && (
+          {csvRows && !scheduleTab && (
             <div key={`csv-${csvRegion}`} ref={containerRef} style={{ padding: "16px 20px", background: B.bg, overflowX: "auto" }}>
               {/* Search & Sort Header */}
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, flexWrap: "wrap" }}>
@@ -2454,7 +3001,7 @@
           )}
 
           {/* ═══ DEMO MODE: Two-column layout with connection lines ═══ */}
-          {!csvRows && (
+          {!csvRows && !scheduleTab && (
           <div key={`${mode}-${csvRegion}`} ref={containerRef} style={{ position: "relative", display: "flex", padding: "24px 20px", gap: 0, background: B.bg }}>
 
             {positions && effectiveShowLines && (
