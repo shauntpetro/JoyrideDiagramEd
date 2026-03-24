@@ -840,7 +840,27 @@
     const MAX_START_DELTA = 6; // Hard cutoff: ±6h from any known start window
 
     function scoreDriver(driver, block, assignedCount, profiles) {
-      const WEIGHTS = { startTime: 0.55, cycle: 0.15, balance: 0.20, proximity: 0.10 };
+      const WEIGHTS = { seat: 0.30, startTime: 0.35, cycle: 0.10, balance: 0.15, proximity: 0.10 };
+
+      // ── Operator ID / Seat match ──
+      // Strongest signal: if driver historically runs this seat, they should get it again
+      let seatScore = 0;
+      if (block.operatorId && driver.blocks) {
+        // Count how many of driver's historical blocks are on this same Operator ID
+        const blockSeatNum = block.operatorId.split("_").pop(); // e.g., "1000"
+        const driverSeatCounts = {};
+        let totalBlocks = 0;
+        driver.blocks.forEach(b => {
+          const sn = (b.truckLabel || "").split("_").pop();
+          if (sn) { driverSeatCounts[sn] = (driverSeatCounts[sn] || 0) + 1; totalBlocks++; }
+        });
+        const matchCount = driverSeatCounts[blockSeatNum] || 0;
+        if (matchCount > 0 && totalBlocks > 0) {
+          // Strong match: driver has run this exact seat before
+          // Score scales with how dominant this seat is for the driver
+          seatScore = 0.5 + 0.5 * (matchCount / totalBlocks); // 0.5–1.0 range
+        }
+      }
 
       // ── Start time match ──
       // Strategy: use driver's ACTUAL block start hours from CSV as ground truth.
@@ -920,7 +940,7 @@
         proxScore = blockFacs.size > 0 ? shared / blockFacs.size : 0;
       }
 
-      return (startScore * WEIGHTS.startTime) + (cycleScore * WEIGHTS.cycle) + (balanceScore * WEIGHTS.balance) + (proxScore * WEIGHTS.proximity);
+      return (seatScore * WEIGHTS.seat) + (startScore * WEIGHTS.startTime) + (cycleScore * WEIGHTS.cycle) + (balanceScore * WEIGHTS.balance) + (proxScore * WEIGHTS.proximity);
     }
 
     function greedySchedule(blocks, drivers, profiles, hosData) {
