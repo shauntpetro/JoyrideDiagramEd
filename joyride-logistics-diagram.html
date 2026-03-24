@@ -2623,7 +2623,9 @@
                                         if (bs === Infinity) return true;
                                         const effectiveEnd = (be && be !== Infinity) ? be : bs + 37*3600000;
                                         if (existingWins.length === 0) return true;
-                                        const reqRest = 10*3600000;
+                                        // Block position determines rest: after Block 1 = 10h, after Block 2 = 34h (restart)
+                                        // idx 0 = Block 1 slot, idx 1 = Block 2 slot, idx 2 = Block 3 slot
+                                        const reqRest = idx >= 2 ? 34*3600000 : 10*3600000;
                                         return existingWins.every(([s, e]) => {
                                           const existEnd = (e && e !== Infinity) ? e : s + 37*3600000;
                                           return bs >= existEnd + reqRest || effectiveEnd <= s - reqRest;
@@ -2772,7 +2774,23 @@
                                       }}>
                                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: B.dim, marginBottom: 2 }}>
                                         <span style={{ color: B.green, fontWeight: 600 }}>PROPOSED</span>
-                                        <span>{blk.totalMiles ? `${Math.round(blk.totalMiles)}mi` : ""}</span>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                          <span>{blk.totalMiles ? `${Math.round(blk.totalMiles)}mi` : ""}</span>
+                                          <span
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              // Remove block from driver, add to unassigned
+                                              const newSchedule = { ...proposedSchedule };
+                                              newSchedule[d.id] = (newSchedule[d.id] || []).filter(b => b.blockId !== blk.blockId);
+                                              setProposedSchedule(newSchedule);
+                                              setUnassignedBlocks(prev => [...prev, blk]);
+                                            }}
+                                            style={{ cursor: "pointer", color: B.cancelRed, fontWeight: 700, fontSize: 10, lineHeight: 1, padding: "0 2px", borderRadius: 3, opacity: 0.6 }}
+                                            onMouseEnter={(e) => (e.currentTarget.style.opacity = "1")}
+                                            onMouseLeave={(e) => (e.currentTarget.style.opacity = "0.6")}
+                                            title="Remove block (move to unassigned)"
+                                          >×</span>
+                                        </div>
                                       </div>
                                       <div style={{ fontSize: 10, fontWeight: 700, color: B.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                                         {blk.blockId.slice(0, 8)}
