@@ -1420,6 +1420,7 @@
       const [scheduleRegion, setScheduleRegion] = useState("ALL");
       const [scheduleRegions, setScheduleRegions] = useState([]);
       const [reassigningBlock, setReassigningBlock] = useState(null);
+      const [dragSource, setDragSource] = useState(null); // { driverId, blockIdx } or { fromUnassigned, blockId }
 
       // Samsara ELD state
       const [samsaraConnected, setSamsaraConnected] = useState(false);
@@ -2544,7 +2545,31 @@
                                   };
                                   const suggestions = getSuggestionsForDriver();
                                   return (
-                                    <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative", zIndex: isSuggesting ? 100 : 1 }}>
+                                    <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative", zIndex: isSuggesting ? 100 : 1 }}
+                                      onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.outline = `2px solid ${B.green}`; }}
+                                      onDragLeave={(e) => { e.currentTarget.style.outline = "none"; }}
+                                      onDrop={(e) => {
+                                        e.preventDefault();
+                                        e.currentTarget.style.outline = "none";
+                                        if (!dragSource) return;
+                                        const newSchedule = { ...proposedSchedule };
+                                        let movedBlock = null;
+                                        if (dragSource.fromUnassigned) {
+                                          movedBlock = unassignedBlocks.find(b => b.blockId === dragSource.blockId);
+                                          if (movedBlock) setUnassignedBlocks(prev => prev.filter(b => b.blockId !== dragSource.blockId));
+                                        } else {
+                                          const fromBlocks = [...(newSchedule[dragSource.driverId] || [])];
+                                          movedBlock = fromBlocks[dragSource.blockIdx];
+                                          fromBlocks.splice(dragSource.blockIdx, 1);
+                                          newSchedule[dragSource.driverId] = fromBlocks;
+                                        }
+                                        if (movedBlock) {
+                                          newSchedule[d.id] = [...(newSchedule[d.id] || []), { ...movedBlock, matchType: "drag" }];
+                                          setProposedSchedule(newSchedule);
+                                        }
+                                        setDragSource(null);
+                                      }}
+                                    >
                                       <div
                                         onClick={(e) => { e.stopPropagation(); setReassigningBlock(isSuggesting ? null : suggestKey); }}
                                         style={{
@@ -2601,13 +2626,61 @@
                                   );
                                 }
                                 return (
-                                  <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative" }}>
+                                  <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative" }}
+                                    onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.outline = `2px solid ${B.gold}`; }}
+                                    onDragLeave={(e) => { e.currentTarget.style.outline = "none"; }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      e.currentTarget.style.outline = "none";
+                                      if (!dragSource || (dragSource.driverId === d.id && dragSource.blockIdx === idx)) return;
+                                      const newSchedule = { ...proposedSchedule };
+                                      // Get the dragged block
+                                      let movedBlock = null;
+                                      if (dragSource.fromUnassigned) {
+                                        movedBlock = unassignedBlocks.find(b => b.blockId === dragSource.blockId);
+                                        if (movedBlock) setUnassignedBlocks(prev => prev.filter(b => b.blockId !== dragSource.blockId));
+                                      } else {
+                                        const fromBlocks = [...(newSchedule[dragSource.driverId] || [])];
+                                        movedBlock = fromBlocks[dragSource.blockIdx];
+                                        fromBlocks.splice(dragSource.blockIdx, 1);
+                                        newSchedule[dragSource.driverId] = fromBlocks;
+                                      }
+                                      if (movedBlock) {
+                                        // Swap: move current block to source position or unassigned
+                                        const currentBlock = blk;
+                                        const toBlocks = [...(newSchedule[d.id] || [])];
+                                        // Remove current block from this driver
+                                        const currentIdx = toBlocks.findIndex(b => b.blockId === currentBlock.blockId);
+                                        if (currentIdx >= 0) toBlocks.splice(currentIdx, 1);
+                                        // Add dragged block
+                                        toBlocks.push({ ...movedBlock, matchType: "drag" });
+                                        newSchedule[d.id] = toBlocks;
+                                        // Put displaced block back to source driver or unassigned
+                                        if (dragSource.fromUnassigned) {
+                                          setUnassignedBlocks(prev => [...prev, currentBlock]);
+                                        } else if (dragSource.driverId !== d.id) {
+                                          const srcBlocks = [...(newSchedule[dragSource.driverId] || [])];
+                                          srcBlocks.push({ ...currentBlock, matchType: "drag" });
+                                          newSchedule[dragSource.driverId] = srcBlocks;
+                                        }
+                                        setProposedSchedule(newSchedule);
+                                      }
+                                      setDragSource(null);
+                                    }}
+                                  >
                                     <div
+                                      draggable
+                                      onDragStart={(e) => {
+                                        setDragSource({ driverId: d.id, blockIdx: idx });
+                                        e.dataTransfer.effectAllowed = "move";
+                                        e.currentTarget.style.opacity = "0.5";
+                                      }}
+                                      onDragEnd={(e) => { e.currentTarget.style.opacity = "1"; setDragSource(null); }}
                                       onClick={(e) => { e.stopPropagation(); setReassigningBlock(reassigningBlock === `${d.id}-${idx}` ? null : `${d.id}-${idx}`); }}
                                       style={{
                                         width: "100%", borderRadius: 8, padding: "8px 6px", textAlign: "center",
                                         border: `1.5px solid rgba(102,187,106,0.35)`, borderTop: `3px solid ${B.green}`,
-                                        background: "rgba(102,187,106,0.04)", cursor: "pointer",
+                                        background: "rgba(102,187,106,0.04)", cursor: "grab",
                                         transition: "all 0.15s",
                                       }}>
                                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: B.dim, marginBottom: 2 }}>
@@ -2627,8 +2700,8 @@
                                           <span style={{ color: B.gold }}>{formatBlockTime(blk.blockEnd)}</span>
                                         </div>
                                       )}
-                                      <div style={{ fontSize: 7, color: blk.matchType === "seat" ? B.green : blk.matchType === "seat2" ? B.gold : blk.matchType === "time" ? "#64b5f6" : B.dim, marginTop: 2, fontWeight: 600 }}>
-                                        {blk.matchType === "seat" ? "PRIMARY SEAT" : blk.matchType === "seat2" ? "ALT SEAT" : blk.matchType === "time" ? "TIME MATCH" : blk.matchType === "suggest" ? "SUGGESTED" : `${Math.round((blk.score || 0) * 100)}%`}
+                                      <div style={{ fontSize: 7, color: blk.matchType === "seat" ? B.green : blk.matchType === "seat2" ? B.gold : blk.matchType === "time" ? "#64b5f6" : blk.matchType === "drag" ? B.bkpL : B.dim, marginTop: 2, fontWeight: 600 }}>
+                                        {blk.matchType === "seat" ? "PRIMARY SEAT" : blk.matchType === "seat2" ? "ALT SEAT" : blk.matchType === "time" ? "TIME MATCH" : blk.matchType === "suggest" ? "SUGGESTED" : blk.matchType === "drag" ? "MANUAL" : `${Math.round((blk.score || 0) * 100)}%`}
                                       </div>
                                     </div>
                                     {/* Reassign dropdown */}
@@ -2682,10 +2755,18 @@
                       </div>
                       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                         {unassignedBlocks.map((blk, i) => (
-                          <div key={blk.blockId} style={{
-                            padding: "8px 12px", borderRadius: 8, background: "rgba(193,59,64,0.06)",
-                            border: `1px solid rgba(193,59,64,0.2)`, fontSize: 10,
-                          }}>
+                          <div key={blk.blockId}
+                            draggable
+                            onDragStart={(e) => {
+                              setDragSource({ fromUnassigned: true, blockId: blk.blockId });
+                              e.dataTransfer.effectAllowed = "move";
+                              e.currentTarget.style.opacity = "0.5";
+                            }}
+                            onDragEnd={(e) => { e.currentTarget.style.opacity = "1"; setDragSource(null); }}
+                            style={{
+                              padding: "8px 12px", borderRadius: 8, background: "rgba(193,59,64,0.06)",
+                              border: `1px solid rgba(193,59,64,0.2)`, fontSize: 10, cursor: "grab",
+                            }}>
                             <div style={{ fontWeight: 700, color: B.text }}>{blk.blockId.slice(0, 8)}</div>
                             <div style={{ fontSize: 8, color: B.dim }}>{blk.domicile} · {blk.operatorId?.split("_").slice(-1)[0]}</div>
                             {blk.blockStart && <div style={{ fontSize: 8, color: B.muted }}>{formatBlockTime(blk.blockStart)}</div>}
