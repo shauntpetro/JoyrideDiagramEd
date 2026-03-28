@@ -2888,9 +2888,54 @@
               {scheduleGenerated && (
                 <div style={{ display: "flex", gap: 12, marginTop: 20, padding: "12px 0", borderTop: `1px solid ${B.bdr}` }}>
                   <button onClick={() => {
-                    // Push proposed schedule to main view — merge into current CSV data
-                    // TODO: This would update the main view's block assignments
-                    setScheduleTab(false);
+                    // Push proposed schedule to main view by synthesizing CSV rows
+                    // from the proposed blocks, then re-uploading as if it were a new CSV
+                    try {
+                      const syntheticRows = [];
+                      Object.entries(proposedSchedule).forEach(([driverId, blocks]) => {
+                        const driver = DRIVERS.find(d => String(d.id) === String(driverId));
+                        if (!driver || !blocks) return;
+                        blocks.forEach(blk => {
+                          // Build a CSV-like row matching the Amazon Relay format
+                          const trips = blk.trips || [blk]; // use block itself if no trip data
+                          trips.forEach(trip => {
+                            syntheticRows.push({
+                              "Block ID": blk.blockId || "",
+                              "Trip ID": trip.tripId || blk.blockId || "",
+                              "Driver Name": driver.label || "",
+                              "Operator ID": blk.operatorId || "",
+                              "Stop 1 Location Name": trip.stop1 || blk.stop1 || "",
+                              "Stop 2 Location Name": trip.stop2 || blk.stop2 || "",
+                              "Stop 1 Planned Arrival Date": (blk.blockStart || "").split(" ")[0] || "",
+                              "Stop 1 Planned Arrival Time": (blk.blockStart || "").split(" ")[1] || "",
+                              "Stop 2 Planned Arrival Date": (blk.blockEnd || "").split(" ")[0] || "",
+                              "Stop 2 Planned Arrival Time": (blk.blockEnd || "").split(" ")[1] || "",
+                              "Estimate Distance": String(Math.round(blk.totalMiles || trip.miles || 0)),
+                              "Trip Stage": "Upcoming",
+                              "Work Type": blk.workType || trip.workType || "",
+                            });
+                          });
+                        });
+                      });
+
+                      if (syntheticRows.length > 0) {
+                        // Merge with existing CSV rows or replace
+                        const mergedRows = [...(csvRows || []), ...syntheticRows];
+                        setCsvRows(mergedRows);
+                        const data = transformCSVData(mergedRows, csvRegion, savedProfiles);
+                        setCsvStats({ drivers: data.drivers.length, loads: data.trucks.length, trips: data.totalTrips });
+                        // Reset interaction state
+                        setCancelledBlocks({});
+                        setDroppedBlocks({});
+                        setBlockBackups({});
+                        setCascadeCancelled({});
+                        savedStates.current = {};
+                      }
+                      setScheduleTab(false);
+                    } catch (e) {
+                      console.error("Push to main view error:", e);
+                      alert("Error pushing schedule: " + e.message);
+                    }
                   }} style={{
                     padding: "10px 28px", borderRadius: 8, fontSize: 12, fontWeight: 700, cursor: "pointer",
                     fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
@@ -2898,19 +2943,34 @@
                     boxShadow: `0 4px 12px rgba(102,187,106,0.3)`,
                   }}>Push to Main View</button>
                   <button onClick={() => {
-                    // Export schedule as CSV
-                    const rows = ["Driver,Operator ID,Block ID,Block Start,Block End,Miles"];
-                    Object.entries(proposedSchedule).forEach(([driverId, blocks]) => {
-                      const driver = DRIVERS.find(d => d.id == driverId);
-                      blocks.forEach(blk => {
-                        rows.push(`"${driver?.label || ""}","${blk.operatorId || ""}","${blk.blockId}","${blk.blockStart || ""}","${blk.blockEnd || ""}",${Math.round(blk.totalMiles || 0)}`);
+                    try {
+                      // Export schedule as CSV
+                      const rows = ["Driver,Driver #,Domicile,Operator ID,Block ID,Block Start,Block End,Miles,Match Type,Score"];
+                      Object.entries(proposedSchedule).forEach(([driverId, blocks]) => {
+                        const driver = DRIVERS.find(d => String(d.id) === String(driverId));
+                        if (!driver) return;
+                        // Sort blocks chronologically for export
+                        const sorted = [...blocks].sort((a, b) => {
+                          const pT = (s) => { if (!s) return Infinity; const p = s.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                          return pT(a.blockStart) - pT(b.blockStart);
+                        });
+                        sorted.forEach(blk => {
+                          rows.push(`"${driver.label}",${driver.driverNumber || ""},"${driver.domicile || ""}","${blk.operatorId || ""}","${blk.blockId}","${blk.blockStart || ""}","${blk.blockEnd || ""}",${Math.round(blk.totalMiles || 0)},"${blk.matchType || ""}",${Math.round((blk.score || 0) * 100)}`);
+                        });
                       });
-                    });
-                    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url; a.download = "proposed-schedule.csv"; a.click();
-                    URL.revokeObjectURL(url);
+                      const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement("a");
+                      a.href = url;
+                      a.download = `proposed-schedule-${new Date().toISOString().slice(0,10)}.csv`;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    } catch (e) {
+                      console.error("Export error:", e);
+                      alert("Export failed: " + e.message);
+                    }
                   }} style={{
                     padding: "8px 20px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
                     fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
