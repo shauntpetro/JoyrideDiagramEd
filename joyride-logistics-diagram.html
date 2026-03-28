@@ -2525,6 +2525,18 @@
                     .map(dom => {
                     const domDrivers = DRIVERS.filter(d => d.domicile === dom);
                     if (domDrivers.length === 0) return null;
+                    // Precompute unassigned blocks for this domicile, distributed across driver rows
+                    const domUnassigned = unassignedBlocks
+                      .filter(ub => { const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || ""; return ubDom === dom; })
+                      .map(ub => ({ ...ub, ubSeat: (ub.operatorId || "").split("_").pop() }))
+                      .sort((a, b) => { const pT = (s) => { if (!s) return Infinity; const p = s.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); }; return pT(a.blockStart) - pT(b.blockStart); });
+                    // Distribute: each driver gets 4 blocks in round-robin
+                    const domUnMap = {}; // driverIdx → [block, ...]
+                    domUnassigned.forEach((ub, i) => {
+                      const driverIdx = Math.floor(i / 4);
+                      if (!domUnMap[driverIdx]) domUnMap[driverIdx] = [];
+                      domUnMap[driverIdx].push(ub);
+                    });
                     return (
                       <div key={dom}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0 6px", borderBottom: `1px solid rgba(102,187,106,0.15)`, marginTop: 8 }}>
@@ -2867,22 +2879,9 @@
                                 );
                               })}
                               {/* ── Right-side: Unassigned blocks in 4 columns ── */}
-                              {unassignedBlocks.length > 0 && (() => {
+                              {domUnassigned.length > 0 && (() => {
                                 const dDom = d.domicile || "";
-                                const driverSeats = new Set((d.blocks || []).map(b => (b.truckLabel || "").split("_").pop()).filter(Boolean));
-                                // Get same-domicile unassigned blocks, prioritize seat matches
-                                const domUn = unassignedBlocks
-                                  .filter(ub => {
-                                    const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || "";
-                                    return ubDom === dDom;
-                                  })
-                                  .map(ub => ({ ...ub, ubSeat: (ub.operatorId || "").split("_").pop(), seatMatch: driverSeats.has((ub.operatorId || "").split("_").pop()) }))
-                                  .filter(ub => ub.seatMatch)
-                                  .sort((a, b) => {
-                                    const pT = (s) => { if (!s) return Infinity; const p = s.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
-                                    return pT(a.blockStart) - pT(b.blockStart);
-                                  })
-                                  .slice(0, 4);
+                                const domUn = domUnMap[dIdx] || [];
                                 if (domUn.length === 0) return null;
                                 // Place in 4 slots chronologically
                                 const openSlots = [null, null, null, null];
