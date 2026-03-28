@@ -928,7 +928,7 @@
       const cycleScore = Math.min(cycleHours / 70, 1);
 
       // ── Load balance — prefer drivers with fewer blocks ──
-      const balanceScore = Math.max(0, (3 - assignedCount) / 3);
+      const balanceScore = Math.max(0, (MAX_BLOCKS - assignedCount) / MAX_BLOCKS);
 
       // ── Facility proximity ──
       let proxScore = 0;
@@ -949,7 +949,7 @@
       const BLOCK_DURATION_MS = 37 * 3600000;  // 37h per block
       const REST_1_2_MS = 10 * 3600000;         // 10h break between block 1→2
       const REST_2_3_MS = 34 * 3600000;         // 34h mandatory restart before block 3
-      const MAX_BLOCKS = 3;
+      const MAX_BLOCKS = 4;
 
       const parseTime = (str) => {
         if (!str) return Infinity;
@@ -1007,18 +1007,14 @@
       const schedDriverWins = {}; // driverId → [[startMs, endMs], ...]
       drivers.forEach(d => { schedDriverWins[d.id] = []; });
 
-      // Helper: check rest requirements (10h after block 1, 34h after block 2)
+      // Helper: check rest requirements — flat 10h minimum between any two blocks
       const fitsWindows = (driverId, startMs, endMs) => {
         if (startMs === Infinity) return true;
         const windows = schedDriverWins[driverId] || [];
-        const numAssigned = windows.length;
-        // Rest required depends on which block this would be:
-        // 2nd block needs 10h after 1st, 3rd block needs 34h after 2nd
-        const requiredRest = numAssigned >= 2 ? REST_2_3_MS : REST_1_2_MS;
         const effEnd = (endMs && endMs !== Infinity) ? endMs : startMs + BLOCK_DURATION_MS;
         return windows.every(([s, e]) => {
           const existEnd = (e && e !== Infinity) ? e : s + BLOCK_DURATION_MS;
-          return startMs >= existEnd + requiredRest || effEnd <= s - requiredRest;
+          return startMs >= existEnd + REST_1_2_MS || effEnd <= s - REST_1_2_MS;
         });
       };
 
@@ -1067,37 +1063,37 @@
         // Sort chronologically first, then by score for ties within same day
         candidates.sort((a, b) => a.blk.startMs - b.blk.startMs || b.score - a.score);
 
-        // ── Pick 3 blocks SPREAD across the date range ──
-        // Divide candidates into 3 time windows (early/mid/late) and pick best from each
+        // ── Pick up to 4 blocks SPREAD across the date range ──
+        // Divide candidates into 4 time windows and pick best from each
         const validTimes = candidates.filter(c => c.blk.startMs !== Infinity).map(c => c.blk.startMs);
         const minTime = Math.min(...validTimes);
         const maxTime = Math.max(...validTimes);
         const span = maxTime - minTime || 1;
-        const thirds = [minTime, minTime + span / 3, minTime + 2 * span / 3, maxTime + 1];
+        const quarters = [minTime, minTime + span / 4, minTime + span / 2, minTime + 3 * span / 4, maxTime + 1];
 
-        // Sort each third by score (best first), then pick one from each
-        const buckets = [[], [], []];
+        // Sort each quarter by score (best first), then pick one from each
+        const buckets = [[], [], [], []];
         candidates.forEach(c => {
           const t = c.blk.startMs;
-          if (t === Infinity) { buckets[2].push(c); return; }
-          if (t < thirds[1]) buckets[0].push(c);
-          else if (t < thirds[2]) buckets[1].push(c);
-          else buckets[2].push(c);
+          if (t === Infinity) { buckets[3].push(c); return; }
+          if (t < quarters[1]) buckets[0].push(c);
+          else if (t < quarters[2]) buckets[1].push(c);
+          else if (t < quarters[3]) buckets[2].push(c);
+          else buckets[3].push(c);
         });
         buckets.forEach(b => b.sort((a, b) => b.score - a.score));
 
-        // Pick one from each bucket (best score), then fill remaining from any bucket
+        // Pick one from each bucket, then fill remaining from any bucket
         let picked = 0;
         const pickedWindows = [];
         const pickFromBucket = (bucket) => {
           for (const c of bucket) {
             if (picked >= MAX_BLOCKS) return false;
             const effEnd = (c.blk.endMs && c.blk.endMs !== Infinity) ? c.blk.endMs : c.blk.startMs + BLOCK_DURATION_MS;
-            // Rest depends on pick number: 2nd pick needs 10h, 3rd needs 34h
-            const requiredRest = picked >= 2 ? REST_2_3_MS : REST_1_2_MS;
+            // Flat 10h rest check against all existing picks
             const restOk = pickedWindows.every(([s, e]) => {
               const existEnd = (e && e !== Infinity) ? e : s + BLOCK_DURATION_MS;
-              return c.blk.startMs >= existEnd + requiredRest || effEnd <= s - requiredRest;
+              return c.blk.startMs >= existEnd + REST_1_2_MS || effEnd <= s - REST_1_2_MS;
             });
             if (!restOk) continue;
             c._picked = true;
@@ -1116,7 +1112,7 @@
           schedule[dp.id].push({ ...c.blk, matchType, score: c.score });
         };
 
-        // First pass: one from each bucket (early/mid/late week)
+        // First pass: one from each of 4 buckets
         for (const bucket of buckets) {
           const pick = pickFromBucket(bucket);
           if (pick) {
@@ -1129,10 +1125,9 @@
         for (const c of remaining) {
           if (picked >= MAX_BLOCKS) break;
           const effEnd = (c.blk.endMs && c.blk.endMs !== Infinity) ? c.blk.endMs : c.blk.startMs + BLOCK_DURATION_MS;
-          const requiredRest = picked >= 2 ? REST_2_3_MS : REST_1_2_MS;
           const restOk = pickedWindows.every(([s, e]) => {
             const existEnd = (e && e !== Infinity) ? e : s + BLOCK_DURATION_MS;
-            return c.blk.startMs >= existEnd + requiredRest || effEnd <= s - requiredRest;
+            return c.blk.startMs >= existEnd + REST_1_2_MS || effEnd <= s - REST_1_2_MS;
           });
           if (!restOk) continue;
           commitPick(c);
@@ -1401,7 +1396,7 @@
                       {(d.blocksRemaining !== undefined || d.proximityScore > 0) && (
                         <div style={{ display: "flex", gap: 4, marginTop: 2, alignItems: "center" }}>
                           <div style={{ width: 30, height: 3, borderRadius: 2, background: "rgba(255,255,255,0.08)", overflow: "hidden" }}>
-                            <div style={{ height: "100%", borderRadius: 2, width: `${((3 - d.blocksUsed) / 3) * 100}%`, background: d.blocksRemaining >= 2 ? B.green : d.blocksRemaining === 1 ? B.gold : B.cancelRed }} />
+                            <div style={{ height: "100%", borderRadius: 2, width: `${((MAX_BLOCKS_PER_WEEK - d.blocksUsed) / MAX_BLOCKS_PER_WEEK) * 100}%`, background: d.blocksRemaining >= 2 ? B.green : d.blocksRemaining === 1 ? B.gold : B.cancelRed }} />
                           </div>
                           <span style={{ fontSize: 7, color: d.blocksRemaining >= 2 ? B.greenL : d.blocksRemaining === 1 ? B.gold : B.cancelRed, fontWeight: 600 }}>
                             {d.blocksUsed}/3
@@ -1752,7 +1747,7 @@
         return blocks;
       };
 
-      const MAX_BLOCKS_PER_WEEK = 3;
+      const MAX_BLOCKS_PER_WEEK = 4;
 
       // Wrapper that returns null instead of Infinity for invalid dates
       const parseBlockDateMs = (s) => {
@@ -2498,9 +2493,10 @@
                   <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "8px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 6, minWidth: "fit-content" }}>
                     <div style={{ width: 40, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center" }}>#</div>
                     <div style={{ width: 280, fontSize: 10, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
-                    {[1, 2, 3].map(n => (
-                      <div key={n} style={{ width: 160, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
+                    {[1, 2, 3, 4].map(n => (
+                      <div key={n} style={{ width: 140, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.5 }}>Block {n}</div>
                     ))}
+                    <div style={{ width: 90, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center" }}>+</div>
                   </div>
 
                   {/* Driver rows grouped by domicile */}
@@ -2523,41 +2519,47 @@
                           const parseTB = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
                           rawBlocks.sort((a, b) => (a.startMs || parseTB(a.blockStart)) - (b.startMs || parseTB(b.blockStart)));
 
-                          const slots = [null, null, null];
-                          if (rawBlocks.length >= 3) {
-                            // 3+ blocks: first 3 in chronological order
-                            slots[0] = rawBlocks[0]; slots[1] = rawBlocks[1]; slots[2] = rawBlocks[2];
+                          const slots = [null, null, null, null];
+                          if (rawBlocks.length >= 4) {
+                            // 4+ blocks: first 4 in chronological order
+                            slots[0] = rawBlocks[0]; slots[1] = rawBlocks[1]; slots[2] = rawBlocks[2]; slots[3] = rawBlocks[3];
+                          } else if (rawBlocks.length === 3) {
+                            // 3 blocks: find the largest gap to determine which slot is vacant
+                            const times = rawBlocks.map(b => b.startMs || parseTB(b.blockStart));
+                            const gaps = [
+                              { idx: 0, gap: times[0] - (Math.min(...scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity)) || times[0]) },
+                              { idx: 1, gap: times[1] - times[0] },
+                              { idx: 2, gap: times[2] - times[1] },
+                              { idx: 3, gap: (Math.max(...scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity)) || times[2]) - times[2] },
+                            ];
+                            // Largest gap determines where the vacant slot goes
+                            const largestGap = gaps.sort((a, b) => b.gap - a.gap)[0];
+                            const vacantIdx = largestGap.idx;
+                            let bi = 0;
+                            for (let si = 0; si < 4; si++) {
+                              if (si === vacantIdx) continue;
+                              slots[si] = rawBlocks[bi++];
+                            }
                           } else if (rawBlocks.length === 2) {
-                            // 2 blocks: determine where vacant slot goes based on gap
-                            // Pattern: Block(37h) + 10h rest + Block(37h) + 34h rest + Block(37h)
-                            // Gap 1→2: ~47h (37h block + 10h rest)
-                            // Gap 2→3: ~71h (37h block + 34h rest)
+                            // 2 blocks: place based on gap size relative to week span
+                            const allTimes = scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity);
+                            const weekSpan = (Math.max(...allTimes) - Math.min(...allTimes)) || 1;
                             const t0 = rawBlocks[0].startMs || parseTB(rawBlocks[0].blockStart);
                             const t1 = rawBlocks[1].startMs || parseTB(rawBlocks[1].blockStart);
-                            const gapMs = t1 - t0;
-                            const gapHrs = gapMs / 3600000;
-                            if (gapHrs >= 100) {
-                              // Very large gap → blocks are 1 and 3, vacant is 2
-                              slots[0] = rawBlocks[0]; slots[2] = rawBlocks[1];
-                            } else if (gapHrs >= 60) {
-                              // Large gap → blocks are 1 and 3, vacant is 2
-                              slots[0] = rawBlocks[0]; slots[2] = rawBlocks[1];
-                            } else if (gapHrs <= 55) {
-                              // Small gap → blocks are 1 and 2, vacant is 3
-                              slots[0] = rawBlocks[0]; slots[1] = rawBlocks[1];
-                            } else {
-                              // Medium gap → blocks are 1 and 2
-                              slots[0] = rawBlocks[0]; slots[1] = rawBlocks[1];
-                            }
+                            const pct0 = (t0 - Math.min(...allTimes)) / weekSpan;
+                            const pct1 = (t1 - Math.min(...allTimes)) / weekSpan;
+                            const s0 = Math.min(3, Math.floor(pct0 * 4));
+                            let s1 = Math.min(3, Math.floor(pct1 * 4));
+                            if (s1 <= s0) s1 = Math.min(3, s0 + 1);
+                            slots[s0] = rawBlocks[0]; slots[s1] = rawBlocks[1];
                           } else if (rawBlocks.length === 1) {
                             // 1 block: place based on where in the week it falls
                             const allTimes = scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity);
                             const minT = Math.min(...allTimes);
-                            const maxT = Math.max(...allTimes);
-                            const span = maxT - minT || 1;
+                            const span = (Math.max(...allTimes) - minT) || 1;
                             const t = rawBlocks[0].startMs || parseTB(rawBlocks[0].blockStart);
                             const pct = (t - minT) / span;
-                            slots[pct < 0.33 ? 0 : pct < 0.66 ? 1 : 2] = rawBlocks[0];
+                            slots[pct < 0.25 ? 0 : pct < 0.5 ? 1 : pct < 0.75 ? 2 : 3] = rawBlocks[0];
                           }
                           const driverBlocks = slots;
                           const profile = savedProfiles?.[d.label];
@@ -2589,8 +2591,8 @@
                                   )}
                                 </div>
                                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, fontSize: 10, color: B.dim }}>
-                                  <span style={{ fontWeight: 600, color: driverBlocks.filter(Boolean).length >= 3 ? B.green : driverBlocks.filter(Boolean).length >= 2 ? B.gold : B.dim }}>
-                                    {driverBlocks.filter(Boolean).length}/3
+                                  <span style={{ fontWeight: 600, color: driverBlocks.filter(Boolean).length >= MAX_BLOCKS_PER_WEEK ? B.green : driverBlocks.filter(Boolean).length >= MAX_BLOCKS_PER_WEEK - 1 ? B.gold : B.dim }}>
+                                    {driverBlocks.filter(Boolean).length}/{MAX_BLOCKS_PER_WEEK}
                                   </span>
                                   <span>{d.cycleRemaining || 70}h cyc</span>
                                 </div>
@@ -2647,7 +2649,7 @@
                                   };
                                   const suggestions = getSuggestionsForDriver();
                                   return (
-                                    <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative", zIndex: isSuggesting ? 100 : 1 }}
+                                    <div key={idx} style={{ width: 140, flexShrink: 0, padding: "0 3px", position: "relative", zIndex: isSuggesting ? 100 : 1 }}
                                       onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.outline = `2px solid ${B.green}`; }}
                                       onDragLeave={(e) => { e.currentTarget.style.outline = "none"; }}
                                       onDrop={(e) => {
@@ -2724,7 +2726,7 @@
                                   );
                                 }
                                 return (
-                                  <div key={idx} style={{ width: 160, flexShrink: 0, padding: "0 4px", position: "relative" }}
+                                  <div key={idx} style={{ width: 140, flexShrink: 0, padding: "0 3px", position: "relative" }}
                                     onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.outline = `2px solid ${B.gold}`; }}
                                     onDragLeave={(e) => { e.currentTarget.style.outline = "none"; }}
                                     onDrop={(e) => {
@@ -2820,7 +2822,7 @@
                                         <div style={{ fontSize: 9, fontWeight: 700, color: B.greenL, marginBottom: 4, textAlign: "center", textTransform: "uppercase" }}>
                                           Reassign Block
                                         </div>
-                                        {DRIVERS.filter(cd => cd.domicile === d.domicile && cd.id !== d.id && (proposedSchedule[cd.id] || []).length < 3).map(cd => (
+                                        {DRIVERS.filter(cd => cd.domicile === d.domicile && cd.id !== d.id && (proposedSchedule[cd.id] || []).length < MAX_BLOCKS_PER_WEEK).map(cd => (
                                           <div key={cd.id} onClick={() => {
                                             // Move block from current driver to new driver
                                             const newSchedule = { ...proposedSchedule };
@@ -2837,7 +2839,7 @@
                                           onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(102,187,106,0.08)")}
                                           onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                                           >
-                                            {cd.label} <span style={{ fontSize: 8, color: B.dim }}>({(proposedSchedule[cd.id] || []).length}/3)</span>
+                                            {cd.label} <span style={{ fontSize: 8, color: B.dim }}>({(proposedSchedule[cd.id] || []).length}/{MAX_BLOCKS_PER_WEEK})</span>
                                           </div>
                                         ))}
                                       </div>
@@ -3107,12 +3109,12 @@
                               <div style={{ width: 50, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
                                 <div style={{
                                   height: "100%", borderRadius: 2, transition: "width 0.3s",
-                                  width: `${Math.min((d.blockCount / 3) * 100, 100)}%`,
-                                  background: d.blockCount >= 3 ? B.cancelRed : d.blockCount >= 2 ? B.gold : B.green,
+                                  width: `${Math.min((d.blockCount / MAX_BLOCKS_PER_WEEK) * 100, 100)}%`,
+                                  background: d.blockCount >= MAX_BLOCKS_PER_WEEK ? B.cancelRed : d.blockCount >= MAX_BLOCKS_PER_WEEK - 1 ? B.gold : B.green,
                                 }} />
                               </div>
-                              <span style={{ fontSize: 10, color: d.blockCount >= 3 ? B.cancelRed : B.dim, fontWeight: d.blockCount >= 3 ? 700 : 500 }}>
-                                {d.blockCount}/3
+                              <span style={{ fontSize: 10, color: d.blockCount >= MAX_BLOCKS_PER_WEEK ? B.cancelRed : B.dim, fontWeight: d.blockCount >= MAX_BLOCKS_PER_WEEK ? 700 : 500 }}>
+                                {d.blockCount}/{MAX_BLOCKS_PER_WEEK}
                               </span>
                               <span style={{ fontSize: 10, fontWeight: 600, color: d.cycleRemaining > 30 ? B.greenL : d.cycleRemaining > 10 ? B.gold : B.cancelRed }}>
                                 {d.hosSource ? (d.hosCycleRemainingFmt || `${d.cycleRemaining}h`) : `${d.cycleRemaining}h`} cyc
@@ -3503,7 +3505,7 @@
                 const isSel = selectedDriver === d.id;
                 return (
                   <div key={d.id} ref={(el) => (driverRefs.current[d.id] = el)}
-                    title={csvRows ? `${d.label}\n${d.blockCount}/3 blocks · ${d.totalMiles}mi · ${d.tripCount} trips\n${d.hosSource ? `HOS: ${d.hosStatus || "unknown"} · ${d.hosDutyRemaining != null ? Math.round(d.hosDutyRemaining / 60) + "h duty left" : ""}` : `${d.estWeeklyHours || 0}h est/wk`}\nFacilities: ${(d.facilities || []).slice(0, 6).join(", ")}${(d.facilities || []).length > 6 ? ` +${d.facilities.length - 6} more` : ""}` : ""}
+                    title={csvRows ? `${d.label}\n${d.blockCount}/${MAX_BLOCKS_PER_WEEK} blocks · ${d.totalMiles}mi · ${d.tripCount} trips\n${d.hosSource ? `HOS: ${d.hosStatus || "unknown"} · ${d.hosDutyRemaining != null ? Math.round(d.hosDutyRemaining / 60) + "h duty left" : ""}` : `${d.estWeeklyHours || 0}h est/wk`}\nFacilities: ${(d.facilities || []).slice(0, 6).join(", ")}${(d.facilities || []).length > 6 ? ` +${d.facilities.length - 6} more` : ""}` : ""}
                     onMouseEnter={() => setHoveredDriver(d.id)} onMouseLeave={() => setHoveredDriver(null)}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -3550,12 +3552,12 @@
                             <div style={{ flex: 1, height: 3, borderRadius: 2, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
                               <div style={{
                                 height: "100%", borderRadius: 2, transition: "width 0.3s",
-                                width: `${Math.min((d.blockCount / 3) * 100, 100)}%`,
-                                background: d.blockCount >= 3 ? B.cancelRed : d.blockCount >= 2 ? B.gold : B.green,
+                                width: `${Math.min((d.blockCount / MAX_BLOCKS_PER_WEEK) * 100, 100)}%`,
+                                background: d.blockCount >= MAX_BLOCKS_PER_WEEK ? B.cancelRed : d.blockCount >= MAX_BLOCKS_PER_WEEK - 1 ? B.gold : B.green,
                               }} />
                             </div>
-                            <span style={{ fontSize: 8, color: d.blockCount >= 3 ? B.cancelRed : B.dim, flexShrink: 0, fontWeight: d.blockCount >= 3 ? 700 : 400 }}>
-                              {d.blockCount}/3
+                            <span style={{ fontSize: 8, color: d.blockCount >= MAX_BLOCKS_PER_WEEK ? B.cancelRed : B.dim, flexShrink: 0, fontWeight: d.blockCount >= MAX_BLOCKS_PER_WEEK ? 700 : 400 }}>
+                              {d.blockCount}/{MAX_BLOCKS_PER_WEEK}
                             </span>
                           </div>
                           <div style={{ fontSize: 7, color: B.dim, display: "flex", gap: 3 }}>
@@ -3769,8 +3771,8 @@
                 {csvRows && (
                   <div style={{ display: "flex", gap: 16, fontSize: 11, color: B.text }}>
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.blockCount || 0) >= 3 ? B.cancelRed : (selectedDriverInfo.blockCount || 0) >= 2 ? B.gold : B.green }}>
-                        {selectedDriverInfo.blockCount || 0}/3
+                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.blockCount || 0) >= MAX_BLOCKS_PER_WEEK ? B.cancelRed : (selectedDriverInfo.blockCount || 0) >= MAX_BLOCKS_PER_WEEK - 1 ? B.gold : B.green }}>
+                        {selectedDriverInfo.blockCount || 0}/{MAX_BLOCKS_PER_WEEK}
                       </div>
                       <div style={{ fontSize: 9, color: B.dim }}>Blocks/Wk</div>
                     </div>
