@@ -2509,10 +2509,12 @@
                     <div style={{ width: 90, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center" }}>+</div>
                     {unassignedBlocks.length > 0 && (
                       <>
-                        <div style={{ width: 2, background: B.cancelRed, margin: "0 6px", opacity: 0.4, flexShrink: 0 }} />
-                        <div style={{ width: 100, fontSize: 9, color: B.cancelRed, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.3 }}>
-                          Unassigned ({unassignedBlocks.length})
-                        </div>
+                        <div style={{ width: 2, background: B.cancelRed, margin: "0 8px", opacity: 0.5, flexShrink: 0, alignSelf: "stretch" }} />
+                        {[1, 2, 3, 4].map(n => (
+                          <div key={`open-${n}`} style={{ width: 120, fontSize: 9, color: B.cancelRed, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.3 }}>
+                            Open {n}
+                          </div>
+                        ))}
                       </>
                     )}
                   </div>
@@ -2864,6 +2866,90 @@
                                   </div>
                                 );
                               })}
+                              {/* ── Right-side: Unassigned blocks in 4 columns ── */}
+                              {unassignedBlocks.length > 0 && (() => {
+                                const dDom = d.domicile || "";
+                                const driverSeats = new Set((d.blocks || []).map(b => (b.truckLabel || "").split("_").pop()).filter(Boolean));
+                                // Get same-domicile unassigned blocks, prioritize seat matches
+                                const domUn = unassignedBlocks
+                                  .filter(ub => {
+                                    const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || "";
+                                    return ubDom === dDom;
+                                  })
+                                  .map(ub => ({ ...ub, ubSeat: (ub.operatorId || "").split("_").pop(), seatMatch: driverSeats.has((ub.operatorId || "").split("_").pop()) }))
+                                  .filter(ub => ub.seatMatch)
+                                  .sort((a, b) => {
+                                    const pT = (s) => { if (!s) return Infinity; const p = s.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                                    return pT(a.blockStart) - pT(b.blockStart);
+                                  })
+                                  .slice(0, 4);
+                                if (domUn.length === 0) return null;
+                                // Place in 4 slots chronologically
+                                const openSlots = [null, null, null, null];
+                                domUn.forEach((ub, i) => { if (i < 4) openSlots[i] = ub; });
+                                return (
+                                  <>
+                                    <div style={{ width: 2, background: B.cancelRed, margin: "0 8px", opacity: 0.3, flexShrink: 0, alignSelf: "stretch" }} />
+                                    {openSlots.map((ub, oi) => (
+                                      <div key={`open-${oi}`} style={{ width: 120, flexShrink: 0, padding: "0 2px", position: "relative", zIndex: ub && reassigningBlock === `open-${d.id}-${ub?.blockId}` ? 200 : 1 }}>
+                                        {ub ? (() => {
+                                          const assignKey = `open-${d.id}-${ub.blockId}`;
+                                          const isAssigning = reassigningBlock === assignKey;
+                                          return (
+                                            <>
+                                              <div
+                                                onClick={(e) => { e.stopPropagation(); setReassigningBlock(isAssigning ? null : assignKey); }}
+                                                draggable
+                                                onDragStart={(e) => { setDragSource({ fromUnassigned: true, blockId: ub.blockId, block: ub }); e.dataTransfer.effectAllowed = "move"; e.currentTarget.style.opacity = "0.5"; }}
+                                                onDragEnd={(e) => { e.currentTarget.style.opacity = "1"; setDragSource(null); }}
+                                                style={{
+                                                  width: "100%", borderRadius: 8, padding: "6px 4px", textAlign: "center", cursor: "pointer",
+                                                  border: isAssigning ? `2px solid ${B.cancelRed}` : `1.5px dashed rgba(193,59,64,0.35)`,
+                                                  background: isAssigning ? "rgba(193,59,64,0.12)" : "rgba(193,59,64,0.04)",
+                                                }}>
+                                                <div style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>OPEN</div>
+                                                <div style={{ fontSize: 9, fontWeight: 700, color: B.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ub.blockId.slice(0, 8)}</div>
+                                                <div style={{ fontSize: 7, color: B.dim }}>{ub.ubSeat}</div>
+                                                {ub.blockStart && <div style={{ fontSize: 7, color: B.muted }}>{formatBlockTime(ub.blockStart)}</div>}
+                                              </div>
+                                              {isAssigning && (
+                                                <div onClick={(e) => e.stopPropagation()} style={{
+                                                  position: "absolute", top: "100%", left: 0, marginTop: 4,
+                                                  background: B.card, border: `1.5px solid ${B.cancelRed}`, borderRadius: 10, padding: 10, zIndex: 500,
+                                                  minWidth: 240, maxHeight: 250, overflowY: "auto", boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+                                                }}>
+                                                  <div style={{ fontSize: 10, fontWeight: 700, color: B.cancelRed, marginBottom: 6, textAlign: "center", textTransform: "uppercase" }}>Assign {ub.blockId.slice(0, 8)}</div>
+                                                  <input type="text" placeholder="Type driver name + Enter..." autoFocus
+                                                    onKeyDown={(e) => {
+                                                      if (e.key === "Enter") {
+                                                        const name = e.target.value.trim(); if (!name) return;
+                                                        const matched = DRIVERS.find(dd => dd.label.toLowerCase().includes(name.toLowerCase()));
+                                                        if (matched) { const ns = { ...proposedSchedule }; ns[matched.id] = [...(ns[matched.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }
+                                                        else { e.target.value = ""; e.target.placeholder = "Not found"; }
+                                                      }
+                                                      if (e.key === "Escape") setReassigningBlock(null);
+                                                    }}
+                                                    style={{ width: "100%", padding: "5px 8px", borderRadius: 5, fontSize: 10, background: B.surface, border: `1px solid ${B.bdrL}`, color: B.text, fontFamily: "'Montserrat', sans-serif", outline: "none", marginBottom: 6 }}
+                                                  />
+                                                  <div style={{ fontSize: 8, color: B.dim, marginBottom: 4 }}>Suggested:</div>
+                                                  {DRIVERS.filter(dd => dd.domicile === dDom && (proposedSchedule[dd.id] || []).length < MAX_BLOCKS_PER_WEEK)
+                                                    .sort((a, b) => (proposedSchedule[a.id] || []).length - (proposedSchedule[b.id] || []).length).slice(0, 8)
+                                                    .map(dd => (
+                                                      <div key={dd.id} onClick={() => { const ns = { ...proposedSchedule }; ns[dd.id] = [...(ns[dd.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }}
+                                                        style={{ padding: "4px 6px", borderRadius: 4, cursor: "pointer", fontSize: 10, color: B.text, display: "flex", justifyContent: "space-between" }}
+                                                        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(193,59,64,0.08)")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                                                      ><span>{dd.label}</span><span style={{ fontSize: 9, color: B.dim }}>{(proposedSchedule[dd.id] || []).length}/{MAX_BLOCKS_PER_WEEK}</span></div>
+                                                    ))}
+                                                </div>
+                                              )}
+                                            </>
+                                          );
+                                        })() : <div style={{ width: "100%", height: 20 }} />}
+                                      </div>
+                                    ))}
+                                  </>
+                                );
+                              })()}
                             </div>
                           );
                         })}
