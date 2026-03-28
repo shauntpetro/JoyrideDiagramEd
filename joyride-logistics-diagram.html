@@ -2918,6 +2918,28 @@
                         });
                       });
 
+                      // Also include unassigned blocks (no driver yet — keep original driver if available)
+                      (unassignedBlocks || []).forEach(blk => {
+                        const trips = blk.trips || [blk];
+                        trips.forEach(trip => {
+                          syntheticRows.push({
+                            "Block ID": blk.blockId || "",
+                            "Trip ID": trip.tripId || blk.blockId || "",
+                            "Driver Name": blk.driverName || trip.driverName || "",
+                            "Operator ID": blk.operatorId || "",
+                            "Stop 1 Location Name": trip.stop1 || blk.stop1 || "",
+                            "Stop 2 Location Name": trip.stop2 || blk.stop2 || "",
+                            "Stop 1 Planned Arrival Date": (blk.blockStart || "").split(" ")[0] || "",
+                            "Stop 1 Planned Arrival Time": (blk.blockStart || "").split(" ")[1] || "",
+                            "Stop 2 Planned Arrival Date": (blk.blockEnd || "").split(" ")[0] || "",
+                            "Stop 2 Planned Arrival Time": (blk.blockEnd || "").split(" ")[1] || "",
+                            "Estimate Distance": String(Math.round(blk.totalMiles || trip.miles || 0)),
+                            "Trip Stage": "Upcoming",
+                            "Work Type": blk.workType || trip.workType || "",
+                          });
+                        });
+                      });
+
                       if (syntheticRows.length > 0) {
                         // Merge with existing CSV rows or replace
                         const mergedRows = [...(csvRows || []), ...syntheticRows];
