@@ -2597,8 +2597,8 @@
                                   <span>{d.cycleRemaining || 70}h cyc</span>
                                 </div>
                               </div>
-                              {/* Blocks 1, 2, 3 */}
-                              {[0, 1, 2].map(idx => {
+                              {/* Blocks 1, 2, 3, 4 */}
+                              {[0, 1, 2, 3].map(idx => {
                                 const blk = driverBlocks[idx];
                                 const suggestKey = `suggest-${d.id}-${idx}`;
                                 const isSuggesting = reassigningBlock === suggestKey;
@@ -2625,9 +2625,8 @@
                                         if (bs === Infinity) return true;
                                         const effectiveEnd = (be && be !== Infinity) ? be : bs + 37*3600000;
                                         if (existingWins.length === 0) return true;
-                                        // Block position determines rest: after Block 1 = 10h, after Block 2 = 34h (restart)
-                                        // idx 0 = Block 1 slot, idx 1 = Block 2 slot, idx 2 = Block 3 slot
-                                        const reqRest = idx >= 2 ? 34*3600000 : 10*3600000;
+                                        // Flat 10h rest between any two blocks
+                                        const reqRest = 10*3600000;
                                         return existingWins.every(([s, e]) => {
                                           const existEnd = (e && e !== Infinity) ? e : s + 37*3600000;
                                           return bs >= existEnd + reqRest || effectiveEnd <= s - reqRest;
