@@ -1267,6 +1267,9 @@
       return `${months[parseInt(month, 10)]} ${parseInt(day, 10)} ${h12}:${min}${ampm}`;
     }
 
+    // Module-level constant so BlockNode and FleetApp both see it
+    const MAX_BLOCKS_PER_WEEK = 4;
+
     const BlockNode = ({ label, driverLabel, driverName, highlight, cancelled, onCancel, onAssign, assigning, availableBackups, backupAssigned, backupName, onRemoveBackup, dropped, onDrop, onUndrop, compact, tooltip, stageColor, blockStart, blockEnd, seatLabel, durationHrs }) => (
       <div className={cancelled ? "block-cancel" : ""} style={{ display: "flex", flexDirection: "column", alignItems: "center", width: compact ? 100 : 120, position: "relative" }} title={tooltip || ""}>
         <div
@@ -1746,8 +1749,6 @@
         }
         return blocks;
       };
-
-      const MAX_BLOCKS_PER_WEEK = 4;
 
       // Wrapper that returns null instead of Infinity for invalid dates
       const parseBlockDateMs = (s) => {
