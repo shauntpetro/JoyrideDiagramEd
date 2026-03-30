@@ -2,11 +2,12 @@
 
 ---
 
-## v1.5.0 — Undo System + Quality Dashboard + Quick Wins
+## v1.5.0 — Undo System + Driver Export + Quality Dashboard
 *2026-03-30*
 
 ### New Features
 - **Undo/Revision History** — Full undo stack (up to 20 levels) for all Schedule Maker operations: drag-drop, suggest, reassign, remove, and manual assign. Ctrl+Z / Cmd+Z keyboard shortcut + "Undo (N)" button in the action bar.
+- **Per-Driver Assignment Sheets** — "Print Driver Sheets" button opens a printable view with one page per driver showing block details, seat assignments, rest gaps, miles, and match types. Includes unassigned blocks summary. Print directly from browser.
 - **Schedule Quality Dashboard** — Inline metrics bar showing % Seat Match, % Time Match, Avg Rest Gap, Drivers Full, and Open count with green/gold/red color coding.
 - **Data Staleness Indicator** — Samsara connection panel shows "updated Xs ago" with a manual refresh button.
 - **Print Stylesheet** — `@media print` rules for clean printed output.
@@ -125,7 +126,7 @@
 ## Backlog — Planned Improvements
 
 ### High Priority
-- [ ] **Per-Driver Assignment Export** — Generate printable/PDF per-driver assignment sheets with blocks, times, routes, rest gaps
+- [x] **Per-Driver Assignment Export** — Generate printable/PDF per-driver assignment sheets with blocks, times, routes, rest gaps *(shipped v1.5.0)*
 - [x] **Undo/Revision History** — Undo stack for drag-drop, reassign, and suggest operations in Schedule Maker *(shipped v1.5.0)*
 
 ### Medium Priority
