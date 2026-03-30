@@ -100,17 +100,28 @@
     // ─── CSV Parser & Data Transformer ───────────────────────────
     function parseCSV(text) {
       const lines = text.split("\n").filter(l => l.trim());
-      const headers = lines[0].split(",");
-      return lines.slice(1).map(line => {
+      const parseRow = (line) => {
         const vals = [];
         let current = "";
         let inQuotes = false;
         for (let i = 0; i < line.length; i++) {
-          if (line[i] === '"') { inQuotes = !inQuotes; }
-          else if (line[i] === ',' && !inQuotes) { vals.push(current.trim()); current = ""; }
+          if (line[i] === '"') {
+            if (inQuotes && i + 1 < line.length && line[i + 1] === '"') {
+              current += '"'; i++; // escaped quote "" → literal "
+            } else {
+              inQuotes = !inQuotes;
+            }
+          } else if (line[i] === ',' && !inQuotes) { vals.push(current.trim()); current = ""; }
           else { current += line[i]; }
         }
         vals.push(current.trim());
+        return vals;
+      };
+      const headers = parseRow(lines[0]);
+      return lines.slice(1).map(line => {
+        const vals = parseRow(line);
+        // Pad short rows to match header count
+        while (vals.length < headers.length) vals.push("");
         const obj = {};
         headers.forEach((h, i) => { obj[h.trim()] = vals[i] || ""; });
         return obj;
@@ -149,11 +160,12 @@
 
       // ── Step 2: Group by Operator ID (= seat/load) ──
       const byOperator = {};
+      let droppedRows = 0;
       rows.forEach(row => {
         const opId = (row["Operator ID"] || "").trim();
         const driverName = (row["Driver Name"] || "").trim();
         const blockId = (row["Block ID"] || "").trim();
-        if (!opId && !driverName) return;
+        if (!opId && !driverName) { droppedRows++; return; }
 
         if (opId) {
           if (!byOperator[opId]) byOperator[opId] = { trips: [], drivers: new Set(), blocks: new Set(), facilities: new Set() };
@@ -166,6 +178,7 @@
           if (s2) byOperator[opId].facilities.add(s2);
         }
       });
+      if (droppedRows > 0) console.warn(`CSV: ${droppedRows} row(s) skipped (no Operator ID or Driver Name)`);
 
       // ── Step 3: Extract regions, filter ──
       const regions = new Set();
@@ -320,6 +333,8 @@
       };
 
       const driverStartPrefs = {};
+      const driverIdToName = new Map();
+      driverSet.forEach((id, name) => driverIdToName.set(id, name));
       Object.entries(driverBlocksMap).forEach(([driverId, blocks]) => {
         // Extract the hour-of-day from each block's start time
         const blockStartHours = [];
@@ -332,7 +347,7 @@
         });
 
         // Merge historical start times from saved profiles
-        const driverName = [...driverSet.entries()].find(([, id]) => id === parseInt(driverId))?.[0];
+        const driverName = driverIdToName.get(parseInt(driverId));
         if (driverName && savedProfilesData && savedProfilesData[driverName]) {
           const saved = savedProfilesData[driverName];
           const existingHours = new Set(blockStartHours.map(h => Math.round(h * 100)));
@@ -945,10 +960,9 @@
     }
 
     function greedySchedule(blocks, drivers, profiles, hosData) {
-      // Block timing: 37h block (includes 10h rest) → 10h break → 37h block → 34h break → 37h block
-      const BLOCK_DURATION_MS = 37 * 3600000;  // 37h per block
-      const REST_1_2_MS = 10 * 3600000;         // 10h break between block 1→2
-      const REST_2_3_MS = 34 * 3600000;         // 34h mandatory restart before block 3
+      // Minimum 10h rest required between any two adjacent blocks
+      const BLOCK_DURATION_MS = 37 * 3600000;  // 37h per block (fallback when end time unknown)
+      const REST_1_2_MS = 10 * 3600000;         // 10h minimum rest between any two blocks
       const MAX_BLOCKS = 4;
 
       const parseTime = (str) => {
@@ -1043,7 +1057,7 @@
         return seatScore * 0.5 + timeScore * 0.5;
       };
 
-      // ═══ STEP 4: For each driver, pick their best 3 blocks ═══
+      // ═══ STEP 4: For each driver, pick their best 4 blocks ═══
       driverProfiles.forEach(dp => {
         if (!dp.domicile) return;
 
@@ -1066,13 +1080,16 @@
         // ── Pick up to 4 blocks SPREAD across the date range ──
         // Divide candidates into 4 time windows and pick best from each
         const validTimes = candidates.filter(c => c.blk.startMs !== Infinity).map(c => c.blk.startMs);
+        const buckets = [[], [], [], []];
+        if (validTimes.length === 0) {
+          // No valid timestamps — put all candidates in first bucket
+          buckets[0] = candidates.slice();
+        } else {
         const minTime = Math.min(...validTimes);
         const maxTime = Math.max(...validTimes);
         const span = maxTime - minTime || 1;
         const quarters = [minTime, minTime + span / 4, minTime + span / 2, minTime + 3 * span / 4, maxTime + 1];
 
-        // Sort each quarter by score (best first), then pick one from each
-        const buckets = [[], [], [], []];
         candidates.forEach(c => {
           const t = c.blk.startMs;
           if (t === Infinity) { buckets[3].push(c); return; }
@@ -1081,6 +1098,7 @@
           else if (t < quarters[3]) buckets[2].push(c);
           else buckets[3].push(c);
         });
+        } // end validTimes guard
         buckets.forEach(b => b.sort((a, b) => b.score - a.score));
 
         // Pick one from each bucket, then fill remaining from any bucket
@@ -1402,7 +1420,7 @@
                             <div style={{ height: "100%", borderRadius: 2, width: `${((MAX_BLOCKS_PER_WEEK - d.blocksUsed) / MAX_BLOCKS_PER_WEEK) * 100}%`, background: d.blocksRemaining >= 2 ? B.green : d.blocksRemaining === 1 ? B.gold : B.cancelRed }} />
                           </div>
                           <span style={{ fontSize: 7, color: d.blocksRemaining >= 2 ? B.greenL : d.blocksRemaining === 1 ? B.gold : B.cancelRed, fontWeight: 600 }}>
-                            {d.blocksUsed}/3
+                            {d.blocksUsed}/{MAX_BLOCKS_PER_WEEK}
                           </span>
                           {d.proximityScore > 0 && <span style={{ fontSize: 7, color: B.greenL }}>· {d.proximityScore} shared</span>}
                           {d.cycleRemaining !== undefined && (
@@ -1586,7 +1604,7 @@
       };
 
       const handleSamsaraDisconnect = async () => {
-        try { await fetch("/api/samsara/disconnect", { method: "DELETE" }); } catch {}
+        try { await fetch("/api/samsara/disconnect", { method: "DELETE" }); } catch (e) { console.warn("Samsara disconnect failed:", e); }
         setSamsaraConnected(false);
         setSamsaraDrivers(null);
         setSamsaraHOS(null);
@@ -1601,7 +1619,7 @@
       const loadDriverProfiles = () => {
         fetch("/api/profiles").then(r => r.json()).then(data => {
           if (data && typeof data === "object") setSavedProfiles(data);
-        }).catch(() => {});
+        }).catch(e => console.warn("API request failed:", e));
       };
 
       const saveDriverProfiles = () => {
@@ -1636,7 +1654,7 @@
             setTimeout(() => setProfilesSaved(false), 3000);
             loadDriverProfiles(); // refresh
           }
-        }).catch(() => {});
+        }).catch(e => console.warn("API request failed:", e));
       };
 
       // Check Samsara + load profiles on startup
@@ -1646,7 +1664,7 @@
             setSamsaraConnected(true);
             fetchSamsaraData();
           }
-        }).catch(() => {});
+        }).catch(e => console.warn("API request failed:", e));
         loadDriverProfiles();
       }, []);
 
@@ -1781,8 +1799,6 @@
           });
         }
         // Estimate proposed block duration in hours
-        const proposedDurationHrs = (proposedStart && proposedEnd) ? (proposedEnd - proposedStart) / 3600000 : 10; // default 10h if unknown
-
         // Determine the domicile of the block's seat
         const blockDomicile = truck?.operatorId ? truck.operatorId.split("_")[1] : null;
 
@@ -1828,7 +1844,7 @@
           const driverFacs = d.facilities || [];
           const sharedFacilities = driverFacs.filter(f => loadFacilities.includes(f));
           const proximityScore = sharedFacilities.length;
-          // Block capacity: fewer blocks = more available (out of 3 max)
+          // Block capacity: fewer blocks = more available (out of MAX_BLOCKS_PER_WEEK)
           const blocksUsed = d.blockCount || 0;
           const blocksRemaining = MAX_BLOCKS_PER_WEEK - blocksUsed;
           const homeTruckLabel = homeTruck?.operatorId ? homeTruck.operatorId.split("_").slice(-1)[0] : (homeTruck ? `L${homeTruck.id}` : "");
@@ -2031,8 +2047,8 @@
             suggestions.push({
               blockId, truckId: truck.id, truckLabel: truck.operatorId,
               seatLabel, bn, key,
-              blockStart: blkStart ? formatBlockTime(trips[0]?.stop1ArrDate + " " + trips[0]?.stop1ArrTime) : "—",
-              blockEnd: blkEnd ? formatBlockTime(trips[trips.length - 1]?.stop2ArrDate + " " + trips[trips.length - 1]?.stop2ArrTime) : "—",
+              blockStart: blkStart && trips.length > 0 ? formatBlockTime(trips[0].stop1ArrDate + " " + trips[0].stop1ArrTime) : "—",
+              blockEnd: blkEnd && trips.length > 0 ? formatBlockTime(trips[trips.length - 1].stop2ArrDate + " " + trips[trips.length - 1].stop2ArrTime) : "—",
               durationHrs, startScore,
               originalDriver: getDriverName(assignedDriver),
             });
@@ -2498,9 +2514,9 @@
 
               {/* Proposed Schedule Table */}
               {scheduleGenerated && (
-                <div style={{ overflowX: "auto" }}>
-                  {/* Column headers */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "8px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 6, minWidth: "fit-content" }}>
+                <div>
+                  {/* Column headers — sticky */}
+                  <div style={{ display: "flex", alignItems: "center", gap: 0, padding: "8px 0", borderBottom: `1px solid ${B.bdr}`, marginBottom: 6, position: "sticky", top: 0, zIndex: 20, background: B.bg }}>
                     <div style={{ width: 40, fontSize: 10, color: B.dim, fontWeight: 700, textAlign: "center" }}>#</div>
                     <div style={{ width: 280, fontSize: 10, color: B.dim, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.5 }}>Driver</div>
                     {[1, 2, 3, 4].map(n => (
@@ -2525,25 +2541,38 @@
                     .map(dom => {
                     const domDrivers = DRIVERS.filter(d => d.domicile === dom);
                     if (domDrivers.length === 0) return null;
-                    // Precompute unassigned blocks for this domicile, distributed across driver rows
                     const domUnassigned = unassignedBlocks
                       .filter(ub => { const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || ""; return ubDom === dom; })
                       .map(ub => ({ ...ub, ubSeat: (ub.operatorId || "").split("_").pop() }))
                       .sort((a, b) => { const pT = (s) => { if (!s) return Infinity; const p = s.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); }; return pT(a.blockStart) - pT(b.blockStart); });
-                    // Distribute: each driver gets 4 blocks in round-robin
-                    const domUnMap = {}; // driverIdx → [block, ...]
-                    domUnassigned.forEach((ub, i) => {
-                      const driverIdx = Math.floor(i / 4);
-                      if (!domUnMap[driverIdx]) domUnMap[driverIdx] = [];
-                      domUnMap[driverIdx].push(ub);
+                    // Time-bucket domicile unassigned blocks into 4 columns
+                    const parseTBDom = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                    const openSlotColumns = [[], [], [], []];
+                    const allTimesForBucket = scheduleBlocks.map(b => b.startMs || parseTBDom(b.blockStart)).filter(t => t !== Infinity);
+                    const bucketMinT = allTimesForBucket.length > 0 ? Math.min(...allTimesForBucket) : 0;
+                    const bucketMaxT = allTimesForBucket.length > 0 ? Math.max(...allTimesForBucket) : 0;
+                    const bucketSpan = allTimesForBucket.length > 0 ? (bucketMaxT - bucketMinT) || 1 : 1;
+                    domUnassigned.forEach(ub => {
+                      const t = ub.startMs || parseTBDom(ub.blockStart);
+                      const slotIdx = t === Infinity ? 3 : Math.min(3, Math.floor(((t - bucketMinT) / bucketSpan) * 4));
+                      openSlotColumns[slotIdx].push(ub);
                     });
+                    const openNumRows = Math.max(...openSlotColumns.map(c => c.length), 0);
+                    const openSlotRows = Array.from({ length: openNumRows }, (_, ri) =>
+                      openSlotColumns.map(col => col[ri] || null)
+                    );
                     return (
                       <div key={dom}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 0 6px", borderBottom: `1px solid rgba(102,187,106,0.15)`, marginTop: 8 }}>
                           <span style={{ fontSize: 14, fontWeight: 700, color: B.green, letterSpacing: 1 }}>{dom}</span>
                           <span style={{ fontSize: 11, color: B.dim }}>({domDrivers.length} drivers)</span>
+                          {domUnassigned.length > 0 && (
+                            <span style={{ fontSize: 9, fontWeight: 700, color: B.cancelRed, background: "rgba(193,59,64,0.12)", padding: "2px 8px", borderRadius: 4 }}>{domUnassigned.length} open</span>
+                          )}
                           <div style={{ flex: 1, height: 1, background: "rgba(102,187,106,0.12)" }} />
                         </div>
+                        <div style={{ display: "grid", gridTemplateColumns: domUnassigned.length > 0 ? "1fr 500px" : "1fr", alignItems: "start" }}>
+                        <div style={{ overflowX: "auto", minWidth: 0 }}>
                         {domDrivers.map((d, dIdx) => {
                           // Place blocks into columns respecting chronological order
                           // Strategy: sort chronologically, then use gaps to determine vacant slot position
@@ -2559,10 +2588,10 @@
                             // 3 blocks: find the largest gap to determine which slot is vacant
                             const times = rawBlocks.map(b => b.startMs || parseTB(b.blockStart));
                             const gaps = [
-                              { idx: 0, gap: times[0] - (Math.min(...scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity)) || times[0]) },
+                              { idx: 0, gap: times[0] - (bucketMinT || times[0]) },
                               { idx: 1, gap: times[1] - times[0] },
                               { idx: 2, gap: times[2] - times[1] },
-                              { idx: 3, gap: (Math.max(...scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity)) || times[2]) - times[2] },
+                              { idx: 3, gap: (bucketMaxT || times[2]) - times[2] },
                             ];
                             // Largest gap determines where the vacant slot goes
                             const largestGap = gaps.sort((a, b) => b.gap - a.gap)[0];
@@ -2574,23 +2603,18 @@
                             }
                           } else if (rawBlocks.length === 2) {
                             // 2 blocks: place based on gap size relative to week span
-                            const allTimes = scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity);
-                            const weekSpan = (Math.max(...allTimes) - Math.min(...allTimes)) || 1;
                             const t0 = rawBlocks[0].startMs || parseTB(rawBlocks[0].blockStart);
                             const t1 = rawBlocks[1].startMs || parseTB(rawBlocks[1].blockStart);
-                            const pct0 = (t0 - Math.min(...allTimes)) / weekSpan;
-                            const pct1 = (t1 - Math.min(...allTimes)) / weekSpan;
+                            const pct0 = (t0 - bucketMinT) / bucketSpan;
+                            const pct1 = (t1 - bucketMinT) / bucketSpan;
                             const s0 = Math.min(3, Math.floor(pct0 * 4));
                             let s1 = Math.min(3, Math.floor(pct1 * 4));
                             if (s1 <= s0) s1 = Math.min(3, s0 + 1);
                             slots[s0] = rawBlocks[0]; slots[s1] = rawBlocks[1];
                           } else if (rawBlocks.length === 1) {
                             // 1 block: place based on where in the week it falls
-                            const allTimes = scheduleBlocks.map(b => b.startMs || parseTB(b.blockStart)).filter(t => t !== Infinity);
-                            const minT = Math.min(...allTimes);
-                            const span = (Math.max(...allTimes) - minT) || 1;
                             const t = rawBlocks[0].startMs || parseTB(rawBlocks[0].blockStart);
-                            const pct = (t - minT) / span;
+                            const pct = (t - bucketMinT) / bucketSpan;
                             slots[pct < 0.25 ? 0 : pct < 0.5 ? 1 : pct < 0.75 ? 2 : 3] = rawBlocks[0];
                           }
                           const driverBlocks = slots;
@@ -2681,12 +2705,23 @@
                                   const suggestions = getSuggestionsForDriver();
                                   return (
                                     <div key={idx} style={{ width: 140, flexShrink: 0, padding: "0 3px", position: "relative", zIndex: isSuggesting ? 100 : 1 }}
-                                      onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.outline = `2px solid ${B.green}`; }}
+                                      onDragOver={(e) => {
+                                        e.preventDefault();
+                                        if (!dragSource || !dragSource.block) return;
+                                        const blkDom = (dragSource.block.operatorId || "").split("_")[1] || dragSource.block.domicile || "";
+                                        const domOk = !blkDom || !d.domicile || blkDom === d.domicile;
+                                        const countOk = (proposedSchedule[d.id] || []).length < MAX_BLOCKS_PER_WEEK;
+                                        e.currentTarget.style.outline = `2px solid ${domOk && countOk ? B.green : B.cancelRed}`;
+                                      }}
                                       onDragLeave={(e) => { e.currentTarget.style.outline = "none"; }}
                                       onDrop={(e) => {
                                         e.preventDefault();
                                         e.currentTarget.style.outline = "none";
                                         if (!dragSource || !dragSource.block) return;
+                                        // Validate: domicile match + capacity
+                                        const blkDom = (dragSource.block.operatorId || "").split("_")[1] || dragSource.block.domicile || "";
+                                        if (blkDom && d.domicile && blkDom !== d.domicile) return;
+                                        if ((proposedSchedule[d.id] || []).length >= MAX_BLOCKS_PER_WEEK) return;
                                         const newSchedule = { ...proposedSchedule };
                                         const movedBlock = { ...dragSource.block, matchType: "drag" };
                                         // Remove from source
@@ -2758,13 +2793,22 @@
                                 }
                                 return (
                                   <div key={idx} style={{ width: 140, flexShrink: 0, padding: "0 3px", position: "relative" }}
-                                    onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.outline = `2px solid ${B.gold}`; }}
+                                    onDragOver={(e) => {
+                                      e.preventDefault();
+                                      if (!dragSource || !dragSource.block) return;
+                                      const blkDom = (dragSource.block.operatorId || "").split("_")[1] || dragSource.block.domicile || "";
+                                      const domOk = !blkDom || !d.domicile || blkDom === d.domicile;
+                                      e.currentTarget.style.outline = `2px solid ${domOk ? B.gold : B.cancelRed}`;
+                                    }}
                                     onDragLeave={(e) => { e.currentTarget.style.outline = "none"; }}
                                     onDrop={(e) => {
                                       e.preventDefault();
                                       e.currentTarget.style.outline = "none";
                                       if (!dragSource || !dragSource.block) return;
                                       if (dragSource.driverId === d.id && dragSource.blockId === blk.blockId) return; // same block
+                                      // Validate: domicile match
+                                      const blkDom = (dragSource.block.operatorId || "").split("_")[1] || dragSource.block.domicile || "";
+                                      if (blkDom && d.domicile && blkDom !== d.domicile) return;
                                       const newSchedule = { ...proposedSchedule };
                                       const draggedBlock = { ...dragSource.block, matchType: "drag" };
                                       const displacedBlock = { ...blk, matchType: "drag" };
@@ -2878,81 +2922,85 @@
                                   </div>
                                 );
                               })}
-                              {/* ── Right-side: Unassigned blocks in 4 columns ── */}
-                              {domUnassigned.length > 0 && (() => {
-                                const dDom = d.domicile || "";
-                                const domUn = domUnMap[dIdx] || [];
-                                if (domUn.length === 0) return null;
-                                // Place in 4 slots chronologically
-                                const openSlots = [null, null, null, null];
-                                domUn.forEach((ub, i) => { if (i < 4) openSlots[i] = ub; });
-                                return (
-                                  <>
-                                    <div style={{ width: 2, background: B.cancelRed, margin: "0 8px", opacity: 0.3, flexShrink: 0, alignSelf: "stretch" }} />
-                                    {openSlots.map((ub, oi) => (
-                                      <div key={`open-${oi}`} style={{ width: 120, flexShrink: 0, padding: "0 2px", position: "relative", zIndex: ub && reassigningBlock === `open-${d.id}-${ub?.blockId}` ? 200 : 1 }}>
-                                        {ub ? (() => {
-                                          const assignKey = `open-${d.id}-${ub.blockId}`;
-                                          const isAssigning = reassigningBlock === assignKey;
-                                          return (
-                                            <>
-                                              <div
-                                                onClick={(e) => { e.stopPropagation(); setReassigningBlock(isAssigning ? null : assignKey); }}
-                                                draggable
-                                                onDragStart={(e) => { setDragSource({ fromUnassigned: true, blockId: ub.blockId, block: ub }); e.dataTransfer.effectAllowed = "move"; e.currentTarget.style.opacity = "0.5"; }}
-                                                onDragEnd={(e) => { e.currentTarget.style.opacity = "1"; setDragSource(null); }}
-                                                style={{
-                                                  width: "100%", borderRadius: 8, padding: "6px 4px", textAlign: "center", cursor: "pointer",
-                                                  border: isAssigning ? `2px solid ${B.cancelRed}` : `1.5px dashed rgba(193,59,64,0.35)`,
-                                                  background: isAssigning ? "rgba(193,59,64,0.12)" : "rgba(193,59,64,0.04)",
-                                                }}>
-                                                <div style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>OPEN</div>
-                                                <div style={{ fontSize: 9, fontWeight: 700, color: B.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ub.blockId.slice(0, 8)}</div>
-                                                <div style={{ fontSize: 7, color: B.dim }}>{ub.ubSeat}</div>
-                                                {ub.blockStart && <div style={{ fontSize: 7, color: B.muted }}>{formatBlockTime(ub.blockStart)}</div>}
-                                              </div>
-                                              {isAssigning && (
-                                                <div onClick={(e) => e.stopPropagation()} style={{
-                                                  position: "absolute", top: "100%", left: 0, marginTop: 4,
-                                                  background: B.card, border: `1.5px solid ${B.cancelRed}`, borderRadius: 10, padding: 10, zIndex: 500,
-                                                  minWidth: 240, maxHeight: 250, overflowY: "auto", boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
-                                                }}>
-                                                  <div style={{ fontSize: 10, fontWeight: 700, color: B.cancelRed, marginBottom: 6, textAlign: "center", textTransform: "uppercase" }}>Assign {ub.blockId.slice(0, 8)}</div>
-                                                  <input type="text" placeholder="Type driver name + Enter..." autoFocus
-                                                    onKeyDown={(e) => {
-                                                      if (e.key === "Enter") {
-                                                        const name = e.target.value.trim(); if (!name) return;
-                                                        const matched = DRIVERS.find(dd => dd.label.toLowerCase().includes(name.toLowerCase()));
-                                                        if (matched) { const ns = { ...proposedSchedule }; ns[matched.id] = [...(ns[matched.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }
-                                                        else { e.target.value = ""; e.target.placeholder = "Not found"; }
-                                                      }
-                                                      if (e.key === "Escape") setReassigningBlock(null);
-                                                    }}
-                                                    style={{ width: "100%", padding: "5px 8px", borderRadius: 5, fontSize: 10, background: B.surface, border: `1px solid ${B.bdrL}`, color: B.text, fontFamily: "'Montserrat', sans-serif", outline: "none", marginBottom: 6 }}
-                                                  />
-                                                  <div style={{ fontSize: 8, color: B.dim, marginBottom: 4 }}>Suggested:</div>
-                                                  {DRIVERS.filter(dd => dd.domicile === dDom && (proposedSchedule[dd.id] || []).length < MAX_BLOCKS_PER_WEEK)
-                                                    .sort((a, b) => (proposedSchedule[a.id] || []).length - (proposedSchedule[b.id] || []).length).slice(0, 8)
-                                                    .map(dd => (
-                                                      <div key={dd.id} onClick={() => { const ns = { ...proposedSchedule }; ns[dd.id] = [...(ns[dd.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }}
-                                                        style={{ padding: "4px 6px", borderRadius: 4, cursor: "pointer", fontSize: 10, color: B.text, display: "flex", justifyContent: "space-between" }}
-                                                        onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(193,59,64,0.08)")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
-                                                      ><span>{dd.label}</span><span style={{ fontSize: 9, color: B.dim }}>{(proposedSchedule[dd.id] || []).length}/{MAX_BLOCKS_PER_WEEK}</span></div>
-                                                    ))}
-                                                </div>
-                                              )}
-                                            </>
-                                          );
-                                        })() : <div style={{ width: "100%", height: 20 }} />}
-                                      </div>
-                                    ))}
-                                  </>
-                                );
-                              })()}
                             </div>
                           );
                         })}
-
+                        </div>
+                        {/* RIGHT: Sticky open blocks panel */}
+                        {domUnassigned.length > 0 && (
+                          <div style={{
+                            position: "sticky", top: 36,
+                            alignSelf: "start", height: "fit-content",
+                            zIndex: 10, background: B.bg,
+                            borderLeft: `2px solid rgba(193,59,64,0.3)`, paddingLeft: 8,
+                          }}>
+                            <div style={{ display: "flex", padding: "6px 0", borderBottom: `1px solid rgba(193,59,64,0.15)` }}>
+                              {[1, 2, 3, 4].map(n => (
+                                <div key={`open-h-${n}`} style={{ width: 120, fontSize: 9, color: B.cancelRed, fontWeight: 700, textAlign: "center", textTransform: "uppercase", letterSpacing: 0.3, flexShrink: 0 }}>Open {n}</div>
+                              ))}
+                            </div>
+                            {openSlotRows.map((row, ri) => (
+                              <div key={`open-row-${ri}`} style={{ display: "flex", padding: "4px 0" }}>
+                                {row.map((ub, ci) => {
+                                  if (!ub) return <div key={`empty-${ci}`} style={{ width: 120, flexShrink: 0, padding: "0 2px" }}><div style={{ width: "100%", height: 42, borderRadius: 6, border: `1px dashed rgba(193,59,64,0.1)` }} /></div>;
+                                  const assignKey = `open-sticky-${dom}-${ub.blockId}`;
+                                  const isAssigning = reassigningBlock === assignKey;
+                                  const dDom = dom;
+                                  return (
+                                    <div key={ub.blockId} style={{ width: 120, flexShrink: 0, padding: "0 2px", position: "relative", zIndex: isAssigning ? 200 : 1 }}>
+                                      <div
+                                        onClick={(e) => { e.stopPropagation(); setReassigningBlock(isAssigning ? null : assignKey); }}
+                                        draggable
+                                        onDragStart={(e) => { setDragSource({ fromUnassigned: true, blockId: ub.blockId, block: ub }); e.dataTransfer.effectAllowed = "move"; e.currentTarget.style.opacity = "0.5"; }}
+                                        onDragEnd={(e) => { e.currentTarget.style.opacity = "1"; setDragSource(null); }}
+                                        style={{
+                                          width: "100%", borderRadius: 8, padding: "6px 4px", textAlign: "center", cursor: "pointer",
+                                          border: isAssigning ? `2px solid ${B.cancelRed}` : `1.5px dashed rgba(193,59,64,0.35)`,
+                                          background: isAssigning ? "rgba(193,59,64,0.12)" : "rgba(193,59,64,0.04)",
+                                        }}>
+                                        <div style={{ fontSize: 7, color: B.cancelRed, fontWeight: 700 }}>OPEN</div>
+                                        <div style={{ fontSize: 9, fontWeight: 700, color: B.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ub.blockId.slice(0, 8)}</div>
+                                        <div style={{ fontSize: 7, color: B.dim }}>{ub.ubSeat || (ub.operatorId || "").split("_").pop()}</div>
+                                        {ub.blockStart && <div style={{ fontSize: 7, color: B.muted }}>{formatBlockTime(ub.blockStart)}</div>}
+                                      </div>
+                                      {isAssigning && (
+                                        <div onClick={(e) => e.stopPropagation()} style={{
+                                          position: "absolute", top: "100%", left: 0, marginTop: 4,
+                                          background: B.card, border: `1.5px solid ${B.cancelRed}`, borderRadius: 10, padding: 10, zIndex: 500,
+                                          minWidth: 240, maxHeight: 250, overflowY: "auto", boxShadow: "0 12px 32px rgba(0,0,0,0.7)",
+                                        }}>
+                                          <div style={{ fontSize: 10, fontWeight: 700, color: B.cancelRed, marginBottom: 6, textAlign: "center", textTransform: "uppercase" }}>Assign {ub.blockId.slice(0, 8)}</div>
+                                          <input type="text" placeholder="Type driver name + Enter..." autoFocus
+                                            onKeyDown={(e) => {
+                                              if (e.key === "Enter") {
+                                                const name = e.target.value.trim(); if (!name) return;
+                                                const matched = DRIVERS.find(dd => dd.label.toLowerCase().includes(name.toLowerCase()));
+                                                if (matched) { const ns = { ...proposedSchedule }; ns[matched.id] = [...(ns[matched.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }
+                                                else { e.target.value = ""; e.target.placeholder = "Not found"; }
+                                              }
+                                              if (e.key === "Escape") setReassigningBlock(null);
+                                            }}
+                                            style={{ width: "100%", padding: "5px 8px", borderRadius: 5, fontSize: 10, background: B.surface, border: `1px solid ${B.bdrL}`, color: B.text, fontFamily: "'Montserrat', sans-serif", outline: "none", marginBottom: 6 }}
+                                          />
+                                          <div style={{ fontSize: 8, color: B.dim, marginBottom: 4 }}>Suggested:</div>
+                                          {DRIVERS.filter(dd => dd.domicile === dDom && (proposedSchedule[dd.id] || []).length < MAX_BLOCKS_PER_WEEK)
+                                            .sort((a, b) => (proposedSchedule[a.id] || []).length - (proposedSchedule[b.id] || []).length).slice(0, 8)
+                                            .map(dd => (
+                                              <div key={dd.id} onClick={() => { const ns = { ...proposedSchedule }; ns[dd.id] = [...(ns[dd.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }}
+                                                style={{ padding: "4px 6px", borderRadius: 4, cursor: "pointer", fontSize: 10, color: B.text, display: "flex", justifyContent: "space-between" }}
+                                                onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(193,59,64,0.08)")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                                              ><span>{dd.label}</span><span style={{ fontSize: 9, color: B.dim }}>{(proposedSchedule[dd.id] || []).length}/{MAX_BLOCKS_PER_WEEK}</span></div>
+                                            ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        </div>
                       </div>
                     );
                   })}
@@ -3274,7 +3322,7 @@
                                 {d.blockCount}/{MAX_BLOCKS_PER_WEEK}
                               </span>
                               <span style={{ fontSize: 10, fontWeight: 600, color: d.cycleRemaining > 30 ? B.greenL : d.cycleRemaining > 10 ? B.gold : B.cancelRed }}>
-                                {d.hosSource ? (d.hosCycleRemainingFmt || `${d.cycleRemaining}h`) : `${d.cycleRemaining}h`} cyc
+                                {d.hosSource ? (d.hosCycleRemainingFmt || "—") : `${d.cycleRemaining}h`} cyc
                               </span>
                               <span style={{ fontSize: 10, color: B.dim }}>· {d.tripCount}t</span>
                               {isMaxed && <span style={{ fontSize: 10, color: B.cancelRed, fontWeight: 700 }}>FULL</span>}
@@ -3962,8 +4010,8 @@
                       </div>
                     )}
                     <div style={{ textAlign: "center" }}>
-                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.blockCount || 0) >= 3 ? B.cancelRed : B.green }}>
-                        {(selectedDriverInfo.blockCount || 0) >= 3 ? "MAXED" : "AVAILABLE"}
+                      <div style={{ fontSize: 18, fontWeight: 700, color: (selectedDriverInfo.blockCount || 0) >= MAX_BLOCKS_PER_WEEK ? B.cancelRed : B.green }}>
+                        {(selectedDriverInfo.blockCount || 0) >= MAX_BLOCKS_PER_WEEK ? "MAXED" : "AVAILABLE"}
                       </div>
                       <div style={{ fontSize: 9, color: B.dim }}>Backup Status</div>
                     </div>
