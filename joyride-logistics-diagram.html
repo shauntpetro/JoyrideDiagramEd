@@ -26,6 +26,13 @@
     .block-cancel { animation: blockPulse 0.3s ease; }
     .panel-enter { animation: fadeSlideIn 0.25s ease; }
     @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    @media print {
+      body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      ::-webkit-scrollbar { display: none; }
+      [style*="position: sticky"], [style*="position:sticky"] { position: static !important; }
+      button, label[style*="cursor"], input { display: none !important; }
+      .block-cancel, .panel-enter { animation: none !important; }
+    }
   </style>
 </head>
 <body>
@@ -536,7 +543,7 @@
     );
 
     // ─── Samsara ELD Connect ─────────────────────────────────
-    const SamsaraConnect = ({ connected, onConnect, onDisconnect, loading, error, matchInfo }) => {
+    const SamsaraConnect = ({ connected, onConnect, onDisconnect, loading, error, matchInfo, lastRefresh, onRefresh }) => {
       const [open, setOpen] = useState(false);
       const [token, setToken] = useState("");
       const dropRef = useRef(null);
@@ -607,8 +614,10 @@
                 </>
               ) : (
                 <>
-                  <div style={{ fontSize: 9, color: B.greenL, marginBottom: 6 }}>
-                    ● Connected to Samsara — HOS data refreshes every 60s
+                  <div style={{ fontSize: 9, color: B.greenL, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                    <span>● Connected to Samsara</span>
+                    {lastRefresh && <span style={{ color: B.dim }}>· updated {(() => { const sec = Math.round((Date.now() - lastRefresh.getTime()) / 1000); return sec < 60 ? `${sec}s ago` : `${Math.round(sec / 60)}m ago`; })()}</span>}
+                    <span onClick={() => { onRefresh && onRefresh(); }} style={{ cursor: "pointer", color: B.greenL, fontWeight: 700, opacity: 0.7, padding: "0 4px" }} onMouseEnter={(e) => e.currentTarget.style.opacity = "1"} onMouseLeave={(e) => e.currentTarget.style.opacity = "0.7"} title="Refresh HOS data now">↻</span>
                   </div>
                   {matchInfo && (
                     <div style={{ fontSize: 9, color: matchInfo.unmatched > 0 ? B.gold : B.muted, marginBottom: 6 }}>
@@ -1500,6 +1509,7 @@
       const [samsaraConnected, setSamsaraConnected] = useState(false);
       const [samsaraDrivers, setSamsaraDrivers] = useState(null);
       const [samsaraHOS, setSamsaraHOS] = useState(null);
+      const [samsaraLastRefresh, setSamsaraLastRefresh] = useState(null);
       const [samsaraLoading, setSamsaraLoading] = useState(false);
       const [samsaraError, setSamsaraError] = useState(null);
       const [driverMatchMap, setDriverMatchMap] = useState({});
@@ -1566,6 +1576,7 @@
             }
           }
           if (locRes) setSamsaraLocations(locRes);
+          setSamsaraLastRefresh(new Date());
           return { drivers: driversRes, hos: hosRes, locations: locRes };
         } catch (e) {
           console.error("Samsara fetch error:", e);
@@ -2131,15 +2142,16 @@
             setHoveredDriver(null);
             setHoveredTruck(null);
           }
-          // Arrow keys to cycle through drivers when one is selected
-          if (selectedDriver && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          // Arrow keys / Tab to cycle through drivers when one is selected
+          if (selectedDriver && (e.key === "ArrowDown" || e.key === "ArrowUp" || (e.key === "Tab" && !e.target.closest("input")))) {
             e.preventDefault();
             const filteredDrivers = DRIVERS.filter(d => !driverSearch || d.label.toLowerCase().includes(driverSearch.toLowerCase()));
             const currentIdx = filteredDrivers.findIndex(d => d.id === selectedDriver);
             if (currentIdx === -1) return;
-            const nextIdx = e.key === "ArrowDown"
-              ? Math.min(currentIdx + 1, filteredDrivers.length - 1)
-              : Math.max(currentIdx - 1, 0);
+            const goBack = e.key === "ArrowUp" || (e.key === "Tab" && e.shiftKey);
+            const nextIdx = goBack
+              ? Math.max(currentIdx - 1, 0)
+              : Math.min(currentIdx + 1, filteredDrivers.length - 1);
             const nextDriver = filteredDrivers[nextIdx];
             setSelectedDriver(nextDriver.id);
             setSelectedTruck(null);
@@ -2152,6 +2164,11 @@
             // Scroll driver card into view
             const driverEl = driverRefs.current[nextDriver.id];
             if (driverEl) driverEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          }
+          // Tab without selection: select first driver
+          if (e.key === "Tab" && !selectedDriver && !e.target.closest("input") && DRIVERS.length > 0) {
+            e.preventDefault();
+            setSelectedDriver(DRIVERS[0].id);
           }
         };
         window.addEventListener("keydown", handleKey);
@@ -2266,6 +2283,8 @@
                 loading={samsaraLoading}
                 error={samsaraError}
                 matchInfo={samsaraMatchInfo}
+                lastRefresh={samsaraLastRefresh}
+                onRefresh={fetchSamsaraData}
               />
               {csvRows && (
                 <button onClick={saveDriverProfiles} style={{
