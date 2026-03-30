@@ -2,13 +2,19 @@
 
 ---
 
-## v1.5.1 — Block Tooltips, Driver Search, Workload Warnings
+## v1.6.0 — Schedule Diff, Auto-Save, Score Breakdown
 *2026-03-30*
 
+### New Features
+- **Schedule Diff View** — Blocks show "MOVED" (gold) when reassigned to a different driver than the algorithm chose, "+ NEW" (blue) when manually added from unassigned. Original "PROPOSED" label stays for unchanged blocks.
+- **Auto-Save to localStorage** — Schedule maker state (proposed schedule, unassigned blocks, CSV data) automatically persists to browser storage. Survives page refresh. Auto-expires after 24h.
+- **Score Breakdown on Tooltips** — Block tooltips now show algorithm decision detail: overall score + seat match % + time match %, so dispatchers can see WHY each block was assigned.
+
 ### Improvements
-- **Block Tooltips** — Hover any proposed block card to see full details: block ID, seat, miles, trip count, start/end times, and route stops (up to 4 shown)
+- **Block Tooltips** — Hover any proposed block card to see full details: block ID, seat, miles, trip count, start/end times, route stops, and score breakdown
 - **Driver Search in Schedule Maker** — Search input next to the region filter lets you find drivers by name across all domiciles
 - **Workload Warning Badges** — Driver rows show a red/gold "Xh min rest" badge when consecutive blocks have tight rest gaps (<14h gold, <11h red)
+- Undo stack resets on new schedule generation (cleaner state)
 
 ---
 

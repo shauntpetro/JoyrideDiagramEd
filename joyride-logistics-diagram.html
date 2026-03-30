@@ -42,7 +42,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <script type="text/babel" data-v="1.5.1">
+  <script type="text/babel" data-v="1.6.0">
     /* cache-bust v2 */
     const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 
@@ -1063,7 +1063,8 @@
           }
         }
 
-        return seatScore * 0.5 + timeScore * 0.5;
+        const composite = seatScore * 0.5 + timeScore * 0.5;
+        return { score: composite, seatScore, timeScore, seatMatch: blk.seatNum === dp.primarySeat ? "primary" : dp.secondarySeats.includes(blk.seatNum) ? "secondary" : "none" };
       };
 
       // ═══ STEP 4: For each driver, pick their best 4 blocks ═══
@@ -1079,8 +1080,8 @@
           if (blkDom !== dp.domicile) return;
           // Rest check against already-assigned blocks
           if (!fitsWindows(dp.id, blk.startMs, blk.endMs)) return;
-          const score = scoreBlock(dp, blk);
-          if (score > 0) candidates.push({ idx, blk, score });
+          const scoreObj = scoreBlock(dp, blk);
+          if (scoreObj.score > 0) candidates.push({ idx, blk, score: scoreObj.score, scoreDetail: scoreObj });
         });
 
         // Sort chronologically first, then by score for ties within same day
@@ -1136,7 +1137,7 @@
           schedDriverWins[dp.id].push([c.blk.startMs, c.blk.endMs]);
           if (!schedule[dp.id]) schedule[dp.id] = [];
           const matchType = c.blk.seatNum === dp.primarySeat ? "seat" : dp.allSeats.has(c.blk.seatNum) ? "seat2" : "time";
-          schedule[dp.id].push({ ...c.blk, matchType, score: c.score });
+          schedule[dp.id].push({ ...c.blk, matchType, score: c.score, scoreDetail: c.scoreDetail });
         };
 
         // First pass: one from each of 4 buckets
@@ -1499,6 +1500,7 @@
       const [scheduleBlocks, setScheduleBlocks] = useState([]);
       const [proposedSchedule, setProposedSchedule] = useState({});
       const [unassignedBlocks, setUnassignedBlocks] = useState([]);
+      const [initialSchedule, setInitialSchedule] = useState(null); // snapshot of first generation for diff
       const [scheduleUndoStack, setScheduleUndoStack] = useState([]);
       const saveScheduleUndo = () => setScheduleUndoStack(prev => [...prev.slice(-19), { schedule: JSON.parse(JSON.stringify(proposedSchedule)), unassigned: JSON.parse(JSON.stringify(unassignedBlocks)) }]);
       const handleScheduleUndo = () => {
@@ -1516,6 +1518,35 @@
       const [reassigningBlock, setReassigningBlock] = useState(null);
       const [dragSource, setDragSource] = useState(null); // { driverId, blockId, block } or { fromUnassigned, blockId, block }
       const [scheduleDriverSearch, setScheduleDriverSearch] = useState("");
+
+      // Auto-save schedule maker state to localStorage
+      useEffect(() => {
+        if (!scheduleGenerated || !proposedSchedule || Object.keys(proposedSchedule).length === 0) return;
+        try {
+          localStorage.setItem("joyride_schedule", JSON.stringify({ proposedSchedule, unassignedBlocks, scheduleBlocks, scheduleCsvRows, scheduleRegion, scheduleRegions, initialSchedule, ts: Date.now() }));
+        } catch (e) { /* quota exceeded — ignore */ }
+      }, [proposedSchedule, unassignedBlocks, scheduleGenerated]);
+
+      // Restore from localStorage on mount
+      useEffect(() => {
+        try {
+          const saved = localStorage.getItem("joyride_schedule");
+          if (!saved) return;
+          const data = JSON.parse(saved);
+          // Only restore if saved within last 24h
+          if (Date.now() - (data.ts || 0) > 86400000) { localStorage.removeItem("joyride_schedule"); return; }
+          if (data.proposedSchedule && Object.keys(data.proposedSchedule).length > 0) {
+            setProposedSchedule(data.proposedSchedule);
+            setUnassignedBlocks(data.unassignedBlocks || []);
+            setScheduleBlocks(data.scheduleBlocks || []);
+            setScheduleCsvRows(data.scheduleCsvRows);
+            setScheduleRegion(data.scheduleRegion || "ALL");
+            setScheduleRegions(data.scheduleRegions || []);
+            if (data.initialSchedule) setInitialSchedule(data.initialSchedule);
+            setScheduleGenerated(true);
+          }
+        } catch (e) { /* corrupt data — ignore */ }
+      }, []);
 
       // Samsara ELD state
       const [samsaraConnected, setSamsaraConnected] = useState(false);
@@ -2503,6 +2534,8 @@
                     const result = greedySchedule(filteredBlocks, DRIVERS, savedProfiles || {}, samsaraHOS);
                     setProposedSchedule(result.schedule);
                     setUnassignedBlocks(result.unassigned);
+                    setInitialSchedule(JSON.parse(JSON.stringify(result.schedule)));
+                    setScheduleUndoStack([]);
                     setScheduleGenerated(true);
                   }} style={{
                     padding: "8px 24px", borderRadius: 8, fontSize: 13, fontWeight: 700, cursor: "pointer",
@@ -2951,7 +2984,7 @@
                                   >
                                     <div
                                       draggable
-                                      title={`${blk.blockId}\nSeat: ${(blk.operatorId || "").split("_").pop()}${blk.totalMiles ? ` · ${Math.round(blk.totalMiles)} mi` : ""}${blk.trips ? ` · ${blk.trips.length} trip${blk.trips.length !== 1 ? "s" : ""}` : ""}\n${blk.blockStart || ""} → ${blk.blockEnd || ""}${blk.trips && blk.trips.length > 0 ? "\n" + blk.trips.slice(0, 4).map(t => `${t.stop1 || ""} → ${t.stop2 || ""}`).join("\n") + (blk.trips.length > 4 ? `\n+${blk.trips.length - 4} more` : "") : ""}`}
+                                      title={`${blk.blockId}\nSeat: ${(blk.operatorId || "").split("_").pop()}${blk.totalMiles ? ` · ${Math.round(blk.totalMiles)} mi` : ""}${blk.trips ? ` · ${blk.trips.length} trip${blk.trips.length !== 1 ? "s" : ""}` : ""}\n${blk.blockStart || ""} → ${blk.blockEnd || ""}${blk.scoreDetail ? `\nScore: ${Math.round(blk.score * 100)}% (seat: ${Math.round(blk.scoreDetail.seatScore * 100)}%, time: ${Math.round(blk.scoreDetail.timeScore * 100)}%)` : blk.score ? `\nScore: ${Math.round(blk.score * 100)}%` : ""}${blk.trips && blk.trips.length > 0 ? "\n" + blk.trips.slice(0, 4).map(t => `${t.stop1 || ""} → ${t.stop2 || ""}`).join("\n") + (blk.trips.length > 4 ? `\n+${blk.trips.length - 4} more` : "") : ""}`}
                                       onDragStart={(e) => {
                                         setDragSource({ driverId: d.id, blockId: blk.blockId, block: blk });
                                         e.dataTransfer.effectAllowed = "move";
@@ -2966,7 +2999,13 @@
                                         transition: "all 0.15s",
                                       }}>
                                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 8, color: B.dim, marginBottom: 2 }}>
-                                        <span style={{ color: B.green, fontWeight: 600 }}>PROPOSED</span>
+                                        {(() => {
+                                          if (!initialSchedule) return <span style={{ color: B.green, fontWeight: 600 }}>PROPOSED</span>;
+                                          const origDriver = Object.entries(initialSchedule).find(([, blocks]) => blocks.some(b => b.blockId === blk.blockId));
+                                          if (!origDriver) return <span style={{ color: "#64b5f6", fontWeight: 600 }}>+ NEW</span>;
+                                          if (String(origDriver[0]) !== String(d.id)) return <span style={{ color: B.gold, fontWeight: 600 }}>MOVED</span>;
+                                          return <span style={{ color: B.green, fontWeight: 600 }}>PROPOSED</span>;
+                                        })()}
                                         <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                                           <span>{blk.totalMiles ? `${Math.round(blk.totalMiles)}mi` : ""}</span>
                                           <span
