@@ -42,7 +42,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <script type="text/babel" data-v="1.6.0">
+  <script type="text/babel" data-v="1.7.0">
     /* cache-bust v2 */
     const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 
@@ -1518,6 +1518,7 @@
       const [reassigningBlock, setReassigningBlock] = useState(null);
       const [dragSource, setDragSource] = useState(null); // { driverId, blockId, block } or { fromUnassigned, blockId, block }
       const [scheduleDriverSearch, setScheduleDriverSearch] = useState("");
+      const [selectedScheduleDriver, setSelectedScheduleDriver] = useState(null);
 
       // Auto-save schedule maker state to localStorage
       useEffect(() => {
@@ -2546,9 +2547,13 @@
                 )}
                 {scheduleGenerated && (
                   <button onClick={() => {
+                    if (!confirm("Clear schedule and saved state?")) return;
                     setProposedSchedule({});
                     setUnassignedBlocks([]);
                     setScheduleGenerated(false);
+                    setInitialSchedule(null);
+                    setScheduleUndoStack([]);
+                    localStorage.removeItem("joyride_schedule");
                   }} style={{
                     padding: "6px 14px", borderRadius: 6, fontSize: 10, fontWeight: 700, cursor: "pointer",
                     fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
@@ -2698,6 +2703,13 @@
                           {domUnassigned.length > 0 && (
                             <span style={{ fontSize: 9, fontWeight: 700, color: B.cancelRed, background: "rgba(193,59,64,0.12)", padding: "2px 8px", borderRadius: 4 }}>{domUnassigned.length} open</span>
                           )}
+                          {(() => {
+                            const domBlocks = domDrivers.reduce((s, d) => s + (proposedSchedule[d.id] || []).length, 0);
+                            const domFull = domDrivers.filter(d => (proposedSchedule[d.id] || []).length >= MAX_BLOCKS_PER_WEEK).length;
+                            const domSeat = (() => { const all = domDrivers.flatMap(d => proposedSchedule[d.id] || []); return all.length > 0 ? Math.round((all.filter(b => b.matchType === "seat").length / all.length) * 100) : 0; })();
+                            if (domBlocks === 0) return null;
+                            return <span style={{ fontSize: 9, color: B.muted }}>{domBlocks} assigned · {domFull}/{domDrivers.length} full{domSeat > 0 ? ` · ${domSeat}% seat` : ""}</span>;
+                          })()}
                           <div style={{ flex: 1, height: 1, background: "rgba(102,187,106,0.12)" }} />
                         </div>
                         <div style={{ display: "grid", gridTemplateColumns: domUnassigned.length > 0 ? "1fr 500px" : "1fr", alignItems: "start" }}>
@@ -2749,7 +2761,8 @@
                           const driverBlocks = slots;
                           const profile = savedProfiles?.[d.label];
                           return (
-                            <div key={d.id} style={{
+                            <React.Fragment key={d.id}>
+                            <div style={{
                               display: "flex", alignItems: "center", gap: 0, padding: "8px 0",
                               minWidth: "fit-content",
                               background: dIdx % 2 === 0 ? "transparent" : "rgba(255,255,255,0.012)",
@@ -2762,7 +2775,7 @@
                               {/* Driver name + prefs */}
                               <div style={{ width: 280, flexShrink: 0, paddingRight: 10 }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, fontWeight: 600, color: B.text }}>
-                                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{d.label}</span>
+                                  <span onClick={(e) => { e.stopPropagation(); setSelectedScheduleDriver(selectedScheduleDriver === d.id ? null : d.id); }} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: "pointer", borderBottom: selectedScheduleDriver === d.id ? `1px solid ${B.green}` : "1px solid transparent" }}>{d.label}</span>
                                   {d.preferredStartLabels && d.preferredStartLabels.length > 0 && (
                                     <span style={{ display: "inline-flex", gap: 2, flexShrink: 0 }}>
                                       {d.preferredStartLabels.map((lbl, li) => (
@@ -3080,6 +3093,32 @@
                                 );
                               })}
                             </div>
+                            {selectedScheduleDriver === d.id && (proposedSchedule[d.id] || []).length > 0 && (
+                              <div style={{ padding: "10px 12px 10px 52px", background: "rgba(102,187,106,0.04)", borderRadius: 6, marginBottom: 4, borderLeft: `3px solid ${B.green}` }}>
+                                <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 10 }}>
+                                  {(proposedSchedule[d.id] || []).slice().sort((a, b) => (a.startMs || parseTB(a.blockStart)) - (b.startMs || parseTB(b.blockStart))).map((blk, bi, arr) => {
+                                    const restGap = bi > 0 ? (() => { const pe = arr[bi-1].endMs || parseTB(arr[bi-1].blockEnd); const ns = blk.startMs || parseTB(blk.blockStart); return pe !== Infinity && ns !== Infinity ? Math.round((ns - pe) / 3600000 * 10) / 10 : null; })() : null;
+                                    return (
+                                      <React.Fragment key={blk.blockId}>
+                                        {restGap !== null && <div style={{ display: "flex", alignItems: "center", color: restGap < 11 ? B.cancelRed : restGap < 14 ? B.gold : B.dim, fontSize: 9, fontWeight: 600 }}>{restGap}h rest →</div>}
+                                        <div style={{ background: B.surface, border: `1px solid ${B.bdr}`, borderRadius: 6, padding: "4px 8px", minWidth: 100 }}>
+                                          <div style={{ fontWeight: 700, color: B.text }}>{blk.blockId.slice(0, 10)}</div>
+                                          <div style={{ color: B.dim, fontSize: 9 }}>{blk.blockStart ? formatBlockTime(blk.blockStart) : "—"} → {blk.blockEnd ? formatBlockTime(blk.blockEnd) : "—"}</div>
+                                          <div style={{ color: blk.matchType === "seat" ? B.green : blk.matchType === "time" ? "#64b5f6" : B.gold, fontSize: 8, fontWeight: 600, marginTop: 2 }}>{blk.matchType === "seat" ? "PRIMARY" : blk.matchType === "seat2" ? "ALT SEAT" : blk.matchType === "time" ? "TIME" : blk.matchType || "—"}{blk.score ? ` · ${Math.round(blk.score * 100)}%` : ""}</div>
+                                        </div>
+                                      </React.Fragment>
+                                    );
+                                  })}
+                                </div>
+                                <div style={{ display: "flex", gap: 12, marginTop: 6, fontSize: 9, color: B.dim }}>
+                                  <span><strong style={{ color: B.text }}>{(proposedSchedule[d.id] || []).length}</strong> blocks</span>
+                                  <span><strong style={{ color: B.text }}>{Math.round((proposedSchedule[d.id] || []).reduce((s, b) => s + (b.totalMiles || 0), 0))}</strong> mi</span>
+                                  <span>{d.cycleRemaining || 70}h cycle remaining</span>
+                                  {d.hosSource && d.hosDutyRemainingFmt && <span>{d.hosDutyRemainingFmt} shift left</span>}
+                                </div>
+                              </div>
+                            )}
+                            </React.Fragment>
                           );
                         })}
                         </div>

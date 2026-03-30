@@ -2,6 +2,18 @@
 
 ---
 
+## v1.7.0 — Driver Detail Panel, Domicile Summaries, Clear Fix
+*2026-03-30*
+
+### New Features
+- **Driver Detail Panel** — Click any driver name in the Schedule Maker to expand an inline detail view showing all their blocks with times, rest gaps between blocks (color-coded), match types, scores, total miles, and HOS status.
+- **Domicile Summary Stats** — Each domicile header now shows: blocks assigned, drivers full count, and seat match percentage for that domicile.
+
+### Fixes
+- **Clear button now clears localStorage** — Previously, clearing the schedule left auto-saved state in the browser. Now it clears React state, undo stack, initial snapshot, AND localStorage with a confirmation prompt.
+
+---
+
 ## v1.6.0 — Schedule Diff, Auto-Save, Score Breakdown
 *2026-03-30*
 
