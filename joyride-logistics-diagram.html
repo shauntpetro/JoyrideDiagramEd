@@ -2480,7 +2480,7 @@
               </div>
 
               {/* Stats bar */}
-              {scheduleCsvRows && (
+              {scheduleCsvRows && (<>
                 <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 11, color: B.muted }}>
                   <span><strong style={{ color: B.text }}>{scheduleBlocks.length}</strong> blocks</span>
                   <span><strong style={{ color: B.text }}>{DRIVERS.length}</strong> drivers</span>
@@ -2501,7 +2501,58 @@
                     </>
                   )}
                 </div>
-              )}
+                {/* Quality metrics bar */}
+                {scheduleGenerated && (() => {
+                  const allAssigned = Object.values(proposedSchedule).flat();
+                  const totalAssigned = allAssigned.length;
+                  if (totalAssigned === 0) return null;
+                  // Seat match %
+                  const seatMatches = allAssigned.filter(b => b.matchType === "seat").length;
+                  const seatPct = Math.round((seatMatches / totalAssigned) * 100);
+                  // Time match %
+                  const timeMatches = allAssigned.filter(b => b.matchType === "time").length;
+                  const timePct = Math.round((timeMatches / totalAssigned) * 100);
+                  // Avg rest gap
+                  const parseTQ = (str) => { if (!str) return Infinity; const p = str.split(" "); if (p.length < 2) return Infinity; const [mo,dy,yr]=p[0].split("/").map(Number); const [hr,mn]=p[1].split(":").map(Number); return new Date(yr,mo-1,dy,hr,mn||0).getTime(); };
+                  let totalGaps = 0, gapCount = 0;
+                  Object.values(proposedSchedule).forEach(blocks => {
+                    if (blocks.length < 2) return;
+                    const sorted = blocks.slice().sort((a, b) => (a.startMs || parseTQ(a.blockStart)) - (b.startMs || parseTQ(b.blockStart)));
+                    for (let i = 1; i < sorted.length; i++) {
+                      const prevEnd = sorted[i - 1].endMs || parseTQ(sorted[i - 1].blockEnd);
+                      const nextStart = sorted[i].startMs || parseTQ(sorted[i].blockStart);
+                      if (prevEnd !== Infinity && nextStart !== Infinity) { totalGaps += (nextStart - prevEnd) / 3600000; gapCount++; }
+                    }
+                  });
+                  const avgRest = gapCount > 0 ? Math.round(totalGaps / gapCount * 10) / 10 : null;
+                  // Drivers full
+                  const driversFull = Object.values(proposedSchedule).filter(b => b.length >= MAX_BLOCKS_PER_WEEK).length;
+                  const driversTotal = Object.keys(proposedSchedule).length;
+                  // Unassigned
+                  const unCount = unassignedBlocks.length;
+                  // Color helpers
+                  const seatColor = seatPct >= 80 ? B.green : seatPct >= 60 ? B.gold : B.cancelRed;
+                  const seatBg = seatPct >= 80 ? B.greenBg : seatPct >= 60 ? B.goldBg : "rgba(193,59,64,0.08)";
+                  const timeColor = timePct >= 70 ? B.green : timePct >= 40 ? B.gold : B.cancelRed;
+                  const timeBg = timePct >= 70 ? B.greenBg : timePct >= 40 ? B.goldBg : "rgba(193,59,64,0.08)";
+                  const restColor = avgRest === null ? B.dim : avgRest >= 14 ? B.green : avgRest >= 11 ? B.gold : B.cancelRed;
+                  const restBg = avgRest === null ? "rgba(255,255,255,0.04)" : avgRest >= 14 ? B.greenBg : avgRest >= 11 ? B.goldBg : "rgba(193,59,64,0.08)";
+                  const unColor = unCount === 0 ? B.green : unCount <= 3 ? B.gold : B.cancelRed;
+                  const unBg = unCount === 0 ? B.greenBg : unCount <= 3 ? B.goldBg : "rgba(193,59,64,0.08)";
+                  const badge = (label, value, color, bg) => (
+                    <span style={{ fontSize: 11, fontWeight: 700, color, background: bg, padding: "3px 10px", borderRadius: 6 }}>{value} <span style={{ fontWeight: 500, opacity: 0.8 }}>{label}</span></span>
+                  );
+                  return (
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+                      {badge("Seat", `${seatPct}%`, seatColor, seatBg)}
+                      {badge("Time", `${timePct}%`, timeColor, timeBg)}
+                      {badge("Avg Rest", avgRest !== null ? `${avgRest}h` : "—", restColor, restBg)}
+                      <span style={{ fontSize: 11, fontWeight: 700, color: B.text, background: "rgba(255,255,255,0.04)", padding: "3px 10px", borderRadius: 6 }}>{driversFull}/{driversTotal} <span style={{ fontWeight: 500, opacity: 0.8 }}>Full</span></span>
+                      {badge("Open", `${unCount}`, unColor, unBg)}
+                    </div>
+                  );
+                })()}
+              </>)}
 
               {/* Empty state */}
               {!scheduleCsvRows && (
