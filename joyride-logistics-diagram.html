@@ -42,7 +42,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <script type="text/babel" data-v="1.5.0">
+  <script type="text/babel" data-v="1.5.1">
     /* cache-bust v2 */
     const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 
@@ -1515,6 +1515,7 @@
       const [scheduleRegions, setScheduleRegions] = useState([]);
       const [reassigningBlock, setReassigningBlock] = useState(null);
       const [dragSource, setDragSource] = useState(null); // { driverId, blockId, block } or { fromUnassigned, blockId, block }
+      const [scheduleDriverSearch, setScheduleDriverSearch] = useState("");
 
       // Samsara ELD state
       const [samsaraConnected, setSamsaraConnected] = useState(false);
@@ -2473,18 +2474,26 @@
                     e.target.value = "";
                   }} />
                 </label>
-                {/* Region filter for schedule */}
+                {/* Region filter + driver search for schedule */}
                 {scheduleRegions.length > 0 && (
-                  <div style={{ display: "flex", gap: 0 }}>
-                    {["ALL", ...scheduleRegions].map(r => (
-                      <button key={r} onClick={() => setScheduleRegion(r)} style={{
-                        padding: "4px 10px", fontSize: 9, fontWeight: 700, cursor: "pointer",
-                        fontFamily: "'Montserrat', sans-serif", border: "none", textTransform: "uppercase",
-                        background: scheduleRegion === r ? "rgba(102,187,106,0.15)" : "rgba(255,255,255,0.04)",
-                        color: scheduleRegion === r ? B.green : B.dim,
-                        borderBottom: scheduleRegion === r ? `2px solid ${B.green}` : "2px solid transparent",
-                      }}>{r}</button>
-                    ))}
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <div style={{ display: "flex", gap: 0 }}>
+                      {["ALL", ...scheduleRegions].map(r => (
+                        <button key={r} onClick={() => setScheduleRegion(r)} style={{
+                          padding: "4px 10px", fontSize: 9, fontWeight: 700, cursor: "pointer",
+                          fontFamily: "'Montserrat', sans-serif", border: "none", textTransform: "uppercase",
+                          background: scheduleRegion === r ? "rgba(102,187,106,0.15)" : "rgba(255,255,255,0.04)",
+                          color: scheduleRegion === r ? B.green : B.dim,
+                          borderBottom: scheduleRegion === r ? `2px solid ${B.green}` : "2px solid transparent",
+                        }}>{r}</button>
+                      ))}
+                    </div>
+                    <input
+                      type="text" placeholder="Search drivers..." value={scheduleDriverSearch}
+                      onChange={(e) => setScheduleDriverSearch(e.target.value)}
+                      style={{ padding: "4px 10px", borderRadius: 5, fontSize: 10, background: B.surface, border: `1px solid ${B.bdr}`, color: B.text, fontFamily: "'Montserrat', sans-serif", outline: "none", width: 140 }}
+                    />
+                    {scheduleDriverSearch && <span onClick={() => setScheduleDriverSearch("")} style={{ cursor: "pointer", fontSize: 10, color: B.dim }}>clear</span>}
                   </div>
                 )}
                 {/* Generate Schedule Button */}
@@ -2626,7 +2635,7 @@
                   {(data.domicileOrder || [])
                     .filter(dom => scheduleRegion === "ALL" || dom === scheduleRegion)
                     .map(dom => {
-                    const domDrivers = DRIVERS.filter(d => d.domicile === dom);
+                    const domDrivers = DRIVERS.filter(d => d.domicile === dom && (!scheduleDriverSearch || d.label.toLowerCase().includes(scheduleDriverSearch.toLowerCase())));
                     if (domDrivers.length === 0) return null;
                     const domUnassigned = unassignedBlocks
                       .filter(ub => { const ubDom = (ub.operatorId || "").split("_")[1] || ub.domicile || ""; return ubDom === dom; })
@@ -2738,6 +2747,22 @@
                                     {driverBlocks.filter(Boolean).length}/{MAX_BLOCKS_PER_WEEK}
                                   </span>
                                   <span>{d.cycleRemaining || 70}h cyc</span>
+                                  {(() => {
+                                    // Compute min rest gap between consecutive proposed blocks
+                                    const pBlocks = (proposedSchedule[d.id] || []).slice();
+                                    if (pBlocks.length < 2) return null;
+                                    pBlocks.sort((a, b) => (a.startMs || parseTB(a.blockStart)) - (b.startMs || parseTB(b.blockStart)));
+                                    let minGap = Infinity;
+                                    for (let i = 1; i < pBlocks.length; i++) {
+                                      const prevEnd = pBlocks[i-1].endMs || parseTB(pBlocks[i-1].blockEnd);
+                                      const nextStart = pBlocks[i].startMs || parseTB(pBlocks[i].blockStart);
+                                      if (prevEnd !== Infinity && nextStart !== Infinity) { const gap = (nextStart - prevEnd) / 3600000; if (gap < minGap) minGap = gap; }
+                                    }
+                                    if (minGap === Infinity) return null;
+                                    const gapColor = minGap < 11 ? B.cancelRed : minGap < 14 ? B.gold : null;
+                                    if (!gapColor) return null;
+                                    return <span style={{ fontSize: 8, fontWeight: 700, color: gapColor, background: minGap < 11 ? "rgba(193,59,64,0.12)" : "rgba(255,213,79,0.12)", padding: "1px 5px", borderRadius: 3 }}>{Math.round(minGap)}h min rest</span>;
+                                  })()}
                                 </div>
                               </div>
                               {/* Blocks 1, 2, 3, 4 */}
@@ -2926,6 +2951,7 @@
                                   >
                                     <div
                                       draggable
+                                      title={`${blk.blockId}\nSeat: ${(blk.operatorId || "").split("_").pop()}${blk.totalMiles ? ` · ${Math.round(blk.totalMiles)} mi` : ""}${blk.trips ? ` · ${blk.trips.length} trip${blk.trips.length !== 1 ? "s" : ""}` : ""}\n${blk.blockStart || ""} → ${blk.blockEnd || ""}${blk.trips && blk.trips.length > 0 ? "\n" + blk.trips.slice(0, 4).map(t => `${t.stop1 || ""} → ${t.stop2 || ""}`).join("\n") + (blk.trips.length > 4 ? `\n+${blk.trips.length - 4} more` : "") : ""}`}
                                       onDragStart={(e) => {
                                         setDragSource({ driverId: d.id, blockId: blk.blockId, block: blk });
                                         e.dataTransfer.effectAllowed = "move";

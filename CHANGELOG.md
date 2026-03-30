@@ -2,6 +2,16 @@
 
 ---
 
+## v1.5.1 — Block Tooltips, Driver Search, Workload Warnings
+*2026-03-30*
+
+### Improvements
+- **Block Tooltips** — Hover any proposed block card to see full details: block ID, seat, miles, trip count, start/end times, and route stops (up to 4 shown)
+- **Driver Search in Schedule Maker** — Search input next to the region filter lets you find drivers by name across all domiciles
+- **Workload Warning Badges** — Driver rows show a red/gold "Xh min rest" badge when consecutive blocks have tight rest gaps (<14h gold, <11h red)
+
+---
+
 ## v1.5.0 — Undo System + Driver Export + Quality Dashboard
 *2026-03-30*
 
