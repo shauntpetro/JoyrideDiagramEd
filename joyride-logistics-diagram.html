@@ -42,7 +42,7 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <script type="text/babel" data-v="1.4.0">
+  <script type="text/babel" data-v="1.5.0">
     /* cache-bust v2 */
     const { useState, useEffect, useLayoutEffect, useRef, useCallback } = React;
 
@@ -1499,6 +1499,17 @@
       const [scheduleBlocks, setScheduleBlocks] = useState([]);
       const [proposedSchedule, setProposedSchedule] = useState({});
       const [unassignedBlocks, setUnassignedBlocks] = useState([]);
+      const [scheduleUndoStack, setScheduleUndoStack] = useState([]);
+      const saveScheduleUndo = () => setScheduleUndoStack(prev => [...prev.slice(-19), { schedule: JSON.parse(JSON.stringify(proposedSchedule)), unassigned: JSON.parse(JSON.stringify(unassignedBlocks)) }]);
+      const handleScheduleUndo = () => {
+        setScheduleUndoStack(prev => {
+          if (prev.length === 0) return prev;
+          const snapshot = prev[prev.length - 1];
+          setProposedSchedule(snapshot.schedule);
+          setUnassignedBlocks(snapshot.unassigned);
+          return prev.slice(0, -1);
+        });
+      };
       const [scheduleGenerated, setScheduleGenerated] = useState(false);
       const [scheduleRegion, setScheduleRegion] = useState("ALL");
       const [scheduleRegions, setScheduleRegions] = useState([]);
@@ -2132,6 +2143,12 @@
       // Keyboard shortcuts
       useEffect(() => {
         const handleKey = (e) => {
+          // Ctrl+Z / Cmd+Z: undo last schedule change
+          if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && scheduleGenerated) {
+            e.preventDefault();
+            handleScheduleUndo();
+            return;
+          }
           if (e.key === "Escape") {
             if (suggestingFor) { setSuggestingFor(null); return; }
             if (pendingBackup) { setPendingBackup(null); return; }
@@ -2173,7 +2190,7 @@
         };
         window.addEventListener("keydown", handleKey);
         return () => window.removeEventListener("keydown", handleKey);
-      }, [selectedDriver, driverSearch]);
+      }, [selectedDriver, driverSearch, scheduleGenerated]);
 
       // Auto-hide lines in CSV mode when sorted or many drivers
       const effectiveShowLines = csvRows
@@ -2792,6 +2809,7 @@
                                         const blkDom = (dragSource.block.operatorId || "").split("_")[1] || dragSource.block.domicile || "";
                                         if (blkDom && d.domicile && blkDom !== d.domicile) return;
                                         if ((proposedSchedule[d.id] || []).length >= MAX_BLOCKS_PER_WEEK) return;
+                                        saveScheduleUndo();
                                         const newSchedule = { ...proposedSchedule };
                                         const movedBlock = { ...dragSource.block, matchType: "drag" };
                                         // Remove from source
@@ -2832,6 +2850,7 @@
                                             <div style={{ fontSize: 10, color: B.dim, textAlign: "center", padding: 12 }}>No blocks fit this driver's schedule</div>
                                           ) : suggestions.map((sb, si) => (
                                             <div key={sb.blockId} onClick={() => {
+                                              saveScheduleUndo();
                                               const newSchedule = { ...proposedSchedule };
                                               newSchedule[d.id] = [...(newSchedule[d.id] || []), { ...sb, matchType: "suggest" }];
                                               setProposedSchedule(newSchedule);
@@ -2879,6 +2898,7 @@
                                       // Validate: domicile match
                                       const blkDom = (dragSource.block.operatorId || "").split("_")[1] || dragSource.block.domicile || "";
                                       if (blkDom && d.domicile && blkDom !== d.domicile) return;
+                                      saveScheduleUndo();
                                       const newSchedule = { ...proposedSchedule };
                                       const draggedBlock = { ...dragSource.block, matchType: "drag" };
                                       const displacedBlock = { ...blk, matchType: "drag" };
@@ -2926,6 +2946,7 @@
                                           <span
                                             onClick={(e) => {
                                               e.stopPropagation();
+                                              saveScheduleUndo();
                                               // Remove block from driver, add to unassigned
                                               const newSchedule = { ...proposedSchedule };
                                               newSchedule[d.id] = (newSchedule[d.id] || []).filter(b => b.blockId !== blk.blockId);
@@ -2969,6 +2990,7 @@
                                         </div>
                                         {DRIVERS.filter(cd => cd.domicile === d.domicile && cd.id !== d.id && (proposedSchedule[cd.id] || []).length < MAX_BLOCKS_PER_WEEK).map(cd => (
                                           <div key={cd.id} onClick={() => {
+                                            saveScheduleUndo();
                                             // Move block from current driver to new driver
                                             const newSchedule = { ...proposedSchedule };
                                             const fromBlocks = [...(newSchedule[d.id] || [])];
@@ -3045,7 +3067,7 @@
                                               if (e.key === "Enter") {
                                                 const name = e.target.value.trim(); if (!name) return;
                                                 const matched = DRIVERS.find(dd => dd.label.toLowerCase().includes(name.toLowerCase()));
-                                                if (matched) { const ns = { ...proposedSchedule }; ns[matched.id] = [...(ns[matched.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }
+                                                if (matched) { saveScheduleUndo(); const ns = { ...proposedSchedule }; ns[matched.id] = [...(ns[matched.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }
                                                 else { e.target.value = ""; e.target.placeholder = "Not found"; }
                                               }
                                               if (e.key === "Escape") setReassigningBlock(null);
@@ -3056,7 +3078,7 @@
                                           {DRIVERS.filter(dd => dd.domicile === dDom && (proposedSchedule[dd.id] || []).length < MAX_BLOCKS_PER_WEEK)
                                             .sort((a, b) => (proposedSchedule[a.id] || []).length - (proposedSchedule[b.id] || []).length).slice(0, 8)
                                             .map(dd => (
-                                              <div key={dd.id} onClick={() => { const ns = { ...proposedSchedule }; ns[dd.id] = [...(ns[dd.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }}
+                                              <div key={dd.id} onClick={() => { saveScheduleUndo(); const ns = { ...proposedSchedule }; ns[dd.id] = [...(ns[dd.id] || []), { ...ub, matchType: "manual" }]; setProposedSchedule(ns); setUnassignedBlocks(prev => prev.filter(b => b.blockId !== ub.blockId)); setReassigningBlock(null); }}
                                                 style={{ padding: "4px 6px", borderRadius: 4, cursor: "pointer", fontSize: 10, color: B.text, display: "flex", justifyContent: "space-between" }}
                                                 onMouseEnter={(e) => (e.currentTarget.style.background = "rgba(193,59,64,0.08)")} onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                                               ><span>{dd.label}</span><span style={{ fontSize: 9, color: B.dim }}>{(proposedSchedule[dd.id] || []).length}/{MAX_BLOCKS_PER_WEEK}</span></div>
@@ -3080,7 +3102,14 @@
 
               {/* Bottom action bar */}
               {scheduleGenerated && (
-                <div style={{ display: "flex", gap: 12, marginTop: 20, padding: "12px 0", borderTop: `1px solid ${B.bdr}` }}>
+                <div style={{ display: "flex", gap: 12, marginTop: 20, padding: "12px 0", borderTop: `1px solid ${B.bdr}`, alignItems: "center" }}>
+                  {scheduleUndoStack.length > 0 && (
+                    <button onClick={handleScheduleUndo} title="Undo last change (Ctrl+Z)" style={{
+                      padding: "6px 14px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer",
+                      fontFamily: "'Montserrat', sans-serif", textTransform: "uppercase",
+                      background: "rgba(255,255,255,0.06)", color: B.muted, border: `1px solid ${B.bdr}`,
+                    }}>Undo ({scheduleUndoStack.length})</button>
+                  )}
                   <button onClick={() => {
                     // Push proposed schedule to main view by synthesizing CSV rows
                     // from the proposed blocks, then re-uploading as if it were a new CSV

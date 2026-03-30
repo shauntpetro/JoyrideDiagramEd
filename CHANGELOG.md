@@ -2,7 +2,19 @@
 
 ---
 
-## v1.4.0 — Schedule Maker UX Overhaul + Quality Dashboard
+## v1.5.0 — Undo System + Quality Dashboard + Quick Wins
+*2026-03-30*
+
+### New Features
+- **Undo/Revision History** — Full undo stack (up to 20 levels) for all Schedule Maker operations: drag-drop, suggest, reassign, remove, and manual assign. Ctrl+Z / Cmd+Z keyboard shortcut + "Undo (N)" button in the action bar.
+- **Schedule Quality Dashboard** — Inline metrics bar showing % Seat Match, % Time Match, Avg Rest Gap, Drivers Full, and Open count with green/gold/red color coding.
+- **Data Staleness Indicator** — Samsara connection panel shows "updated Xs ago" with a manual refresh button.
+- **Print Stylesheet** — `@media print` rules for clean printed output.
+- **Keyboard Tab Navigation** — Tab cycles through drivers (Shift+Tab reverses).
+
+---
+
+## v1.4.0 — Sticky Open Blocks Panel + Bug Fixes
 *2026-03-30*
 
 ### New Features
@@ -114,7 +126,7 @@
 
 ### High Priority
 - [ ] **Per-Driver Assignment Export** — Generate printable/PDF per-driver assignment sheets with blocks, times, routes, rest gaps
-- [ ] **Undo/Revision History** — Undo stack for drag-drop, reassign, and suggest operations in Schedule Maker
+- [x] **Undo/Revision History** — Undo stack for drag-drop, reassign, and suggest operations in Schedule Maker *(shipped v1.5.0)*
 
 ### Medium Priority
 - [ ] **Multi-Week Comparison** — Load previous week's schedule alongside current for fairness/balance review
